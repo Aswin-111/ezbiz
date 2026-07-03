@@ -1,7 +1,5 @@
 // lib/pages/user_details_page.dart
 import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:ezbiz/DetailWidgets/cart_item_card.dart';
 import 'package:ezbiz/DetailWidgets/checkout_bar.dart';
@@ -12,30 +10,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:ezbiz/Consts/consts.dart';
-import 'package:ezbiz/pages/order_pdf.dart';
+
 import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
 
-class UserDetailsPage extends StatefulWidget {
-  final Map<String, dynamic> userData;
-  final String compCode;
-  final String custType;
+class EditOrderPage extends StatefulWidget {
+  final int ordNo;
+  final Map<String, dynamic> orderData;
 
-  const UserDetailsPage({
+  const EditOrderPage({
     super.key,
-    required this.userData,
-    required this.compCode,
-    required this.custType,
+    required this.ordNo,
+    required this.orderData,
   });
 
   @override
-  State<UserDetailsPage> createState() => _UserDetailsPageState();
+  State<EditOrderPage> createState() => _EditOrderPageState();
 }
 
-class _UserDetailsPageState extends State<UserDetailsPage> {
+class _EditOrderPageState extends State<EditOrderPage> {
   final _formKey = GlobalKey<FormState>();
   final _searchController = TextEditingController();
 
@@ -47,6 +44,107 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   bool _showShopDetails = false;
   bool _isItemAlreadyAdded(Map<String, dynamic> item) {
     return _addedItems.any((e) => e['item_code'] == item['item_code']);
+  }
+
+  Future<void> _confirmSaveOrder() async {
+    if (_addedItems.isEmpty) {
+      _showErrorSnackBar('Add at least one item before saving');
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Save changes?'),
+            content: const Text(
+              'This will update the order and all its items.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+    );
+
+    if (ok == true) {
+      await _updateOrder();
+    }
+  }
+
+  Future<void> _updateOrder() async {
+    setState(() => _isLoading = true);
+
+    try {
+      final headers = await authHeaders();
+
+      final payload = {
+        "ord_date": widget.orderData["order"]["ord_date"],
+        "ord_time": widget.orderData["order"]["ord_time"],
+        "status_flag":
+            widget.orderData["order"]["status"] == "BILLED" ? "Y" : "N",
+        "customer": {
+          "code": _customer["code"],
+          "name": _customer["name"],
+          "phone": _customer["phone"],
+          "address": _customer["address"],
+          "area": _customer["area"],
+        },
+        "items":
+            _addedItems.map((item) {
+              return {
+                "item_code": item["item_code"],
+                "item_name": item["item_name"],
+                "qty": item["qty"],
+                "mrp": item["item_mrp"] ?? item["mrp"] ?? 0,
+                "price":
+                    item["item_price"] ??
+                    item["item_price1"] ??
+                    item["price"] ??
+                    0,
+                "tax": item["item_tax"] ?? item["tax"] ?? 0,
+                "discount": item["item_disc"] ?? item["discount"] ?? 0,
+                "cess": item["item_cess"] ?? item["cess"] ?? 0,
+              };
+            }).toList(),
+      };
+
+      final response = await http.put(
+        Uri.parse('$baseUrl/orders/${widget.ordNo}'),
+        headers: headers,
+        body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 200) {
+        _showSuccessSnackBar('Order updated successfully!');
+        if (!mounted) return;
+        Navigator.pop(context, true);
+      } else {
+        print("Error from response ${response.body}");
+        _showErrorSnackBar(
+          'Failed to update order. Status: ${response.statusCode}',
+        );
+      }
+    } catch (e) {
+      _showErrorSnackBar('Error updating order: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Map<String, dynamic> get _customer {
+    final raw = widget.orderData["order"]?["customer"];
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return {};
   }
 
   final NumberFormat _moneyFormat = NumberFormat('#,##0.##');
@@ -87,13 +185,23 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   @override
   void initState() {
     super.initState();
-    _showShopDetails = true;
+    _showShopDetails = false;
+
+    final items =
+        (widget.orderData['items'] as List? ?? [])
+            .map((e) => _mapOrderItemToEditable(Map<String, dynamic>.from(e)))
+            .toList();
+
+    _addedItems.addAll(items.cast<Map<String, dynamic>>());
+
     _fetchUserDetails();
+    debugPrint("EDIT ORDER DATA: ${jsonEncode(widget.orderData)}");
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+
     super.dispose();
   }
 
@@ -120,6 +228,7 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
 
       if (response.statusCode == 200) {
         final jsonData = json.decode(response.body);
+        print("Fetch user details : $jsonData");
 
         final rawList =
             jsonData is List
@@ -156,110 +265,10 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     }
   }
 
-  Future<void> _placeOrderAndGetPdf() async {
-    setState(() => _isLoading = true);
-
-    final prefs = await SharedPreferences.getInstance();
-    final userId = prefs.getString('user_id');
-
-    final requestBody = {
-      'comp_code': widget.compCode,
-      'user_id': userId,
-      'customer': {
-        'code': (widget.userData['cust_code'] ?? '').toString(),
-        'name': (widget.userData['cust_name'] ?? '').toString(),
-        'phone': (widget.userData['cust_phone'] ?? '').toString(),
-        'address': (widget.userData['cust_address'] ?? '').toString(),
-        'area': (widget.userData['cust_area'] ?? '').toString(),
-        'type': (widget.userData['cust_type'] ?? widget.custType).toString(),
-      },
-      'order_details': _addedItems,
-    };
-
-    try {
-      final headers = await authHeaders();
-      final response = await http.post(
-        Uri.parse('$baseUrl/orders'),
-        body: jsonEncode(requestBody),
-        headers: headers,
-      );
-
-      if (response.statusCode == 200) {
-        final pdfBytes = _parsePdfBytes(response);
-        final file = await _savePdfToFile(pdfBytes);
-
-        setState(() {
-          _isLoading = false;
-          _addedItems.clear();
-        });
-
-        _showSuccessSnackBar('Order submitted successfully!');
-        await Future.delayed(const Duration(seconds: 2));
-
-        if (!mounted) return;
-        _navigateToPdfPreview(file);
-      } else {
-        setState(() => _isLoading = false);
-        _showErrorSnackBar(
-          'Failed to submit order. Status: ${response.statusCode}',
-        );
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-      _showErrorSnackBar('Error submitting order: $e');
-    }
-  }
-
   // ==================== HELPER METHODS ====================
 
-  Uint8List _parsePdfBytes(http.Response response) {
-    try {
-      final decoded = jsonDecode(response.body);
-      if (decoded is Map<String, dynamic>) {
-        final keys =
-            decoded.keys.toList()
-              ..sort((a, b) => int.parse(a).compareTo(int.parse(b)));
-        final pdfBytes = Uint8List(keys.length);
-        for (int i = 0; i < keys.length; i++) {
-          pdfBytes[i] = (decoded[keys[i]] as num).toInt();
-        }
-        return pdfBytes;
-      } else if (decoded is List) {
-        return Uint8List.fromList(
-          decoded.map<int>((e) => (e as num).toInt()).toList(),
-        );
-      }
-    } catch (_) {}
-    return response.bodyBytes;
-  }
-
-  Future<File> _savePdfToFile(Uint8List pdfBytes) async {
-    final dir = await getTemporaryDirectory();
-    final file = File('${dir.path}/order_bill.pdf');
-    await file.writeAsBytes(pdfBytes);
-    return file;
-  }
-
-  void _navigateToPdfPreview(File file) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => PdfPreviewScreen(pdfFile: file)),
-    );
-  }
-
-  double _netRateToRate(double netRate, double taxPercent) {
-    if (taxPercent <= 0) return netRate;
-    return netRate / (1 + (taxPercent / 100));
-  }
-
-  double _getItemNetRate(Map<String, dynamic> item) {
-    final p1 = _asDouble(item['item_price1']);
-    final p2 = _asDouble(item['item_price2']);
-
-    if (widget.custType == 'W') {
-      return p2 > 0 ? p2 : p1;
-    }
-    return p1;
+  double _getItemRate(Map<String, dynamic> item) {
+    return _asDouble(item['item_price1']);
   }
 
   double _calculateTotal() {
@@ -268,20 +277,17 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     });
   }
 
-void _filterSearchResults(String query) {
-  setState(() {
-    if (query.isEmpty) {
-      _filteredDetails = List.from(_userDetails);
-    } else {
-      final q = query.toLowerCase().trim();
-      _filteredDetails = _userDetails.where((item) {
-        final code = (item['item_code'] ?? '').toString().toLowerCase();
-        final name = (item['item_name'] ?? '').toString().toLowerCase();
-        return code.contains(q) || name.contains(q);
-      }).toList();
-    }
-  });
-}
+  void _filterSearchResults(String query) {
+    setState(() {
+      _filteredDetails =
+          query.isEmpty
+              ? List.from(_userDetails)
+              : _userDetails.where((item) {
+                final name = (item['item_name'] ?? '').toString().toLowerCase();
+                return name.contains(query.toLowerCase());
+              }).toList();
+    });
+  }
 
   void _addItemToOrder(
     Map<String, dynamic> oldItem,
@@ -341,9 +347,9 @@ void _filterSearchResults(String query) {
   Map<String, TextEditingController> _createControllers(
     Map<String, dynamic> item,
   ) {
+    final rate = _getItemRate(item);
     final tax = _asDouble(item['item_tax']);
-    final netrate = _getItemNetRate(item);
-    final rate = _netRateToRate(netrate, tax);
+    final netrate = rate + (rate * tax / 100);
 
     return {
       'stock': TextEditingController(text: _asInt(item['item_qty']).toString()),
@@ -373,6 +379,41 @@ void _filterSearchResults(String query) {
                 ? _asDouble(item['subtotal']).toStringAsFixed(2)
                 : '',
       ),
+    };
+  }
+
+  Map<String, dynamic> _mapOrderItemToEditable(Map<String, dynamic> item) {
+    final qty = (item['qty'] as num?)?.toDouble() ?? 1.0;
+    final price = (item['price'] as num?)?.toDouble() ?? 0.0;
+    final tax = (item['tax'] as num?)?.toDouble() ?? 0.0;
+    final discount = (item['discount'] as num?)?.toDouble() ?? 0.0;
+    final mrp = (item['mrp'] as num?)?.toDouble() ?? 0.0;
+
+    final netrate = price + (price * tax / 100);
+    final subtotalTarget = price - (price * discount / 100);
+    final subtotal = (subtotalTarget + (subtotalTarget * tax / 100)) * qty;
+
+    return {
+      'line_no': item['line_no'],
+      'item_code': item['item_code'],
+      'item_name': item['item_name'],
+      'item_uom': item['item_uom'] ?? '',
+      'hsn_code': item['hsn_code'] ?? '',
+      'item_qty': qty,
+      'item_price1': price,
+      'item_mrp': mrp,
+      'item_tax': tax,
+      'item_disc': discount,
+      'qty': qty,
+      'free': 0,
+      'offer': '',
+      'netrate': netrate,
+      'subtotal': double.parse(subtotal.toStringAsFixed(2)),
+      'price': price,
+      'tax': tax,
+      'discount': discount,
+      'mrp': mrp,
+      'cess': item['cess'] ?? 0,
     };
   }
 
@@ -474,12 +515,7 @@ void _filterSearchResults(String query) {
         child: Scaffold(
           backgroundColor: const Color(0xFFF8F9FE),
           appBar: _buildAppBar(),
-          body: Stack(
-            children: [
-              _buildBody(),
-              if (_isLoading) _buildGeneratingBillLoader(),
-            ],
-          ),
+          body: _buildBody(),
         ),
       ),
     );
@@ -498,7 +534,9 @@ void _filterSearchResults(String query) {
         },
       ),
       title: Text(
-        widget.userData['cust_name'] ?? 'Customer Details',
+        _customer['name']?.toString().isNotEmpty == true
+            ? _customer['name'].toString()
+            : 'Edit Order',
         style: const TextStyle(
           color: Colors.black,
           fontSize: 18,
@@ -654,28 +692,34 @@ void _filterSearchResults(String query) {
     return Column(
       children: [
         CustomerInfoCard(
-          custName: widget.userData['cust_name'] ?? '',
-          custAddress: widget.userData['cust_address'] ?? '',
-          custPhone: widget.userData['cust_phone'] ?? '',
-          custType: widget.custType,
+          custName: (_customer['name'] ?? '').toString(),
+          custAddress: (_customer['address'] ?? '').toString(),
+          custPhone: (_customer['phone'] ?? '').toString(),
+          custType: (_customer['type'] ?? '').toString(),
         ),
-        ItemSearchBar(
-          controller: _searchController,
-          onTap: () => setState(() => _showShopDetails = true),
-          onChanged: _filterSearchResults,
-          onClear: () {
-            _searchController.clear();
-            _filterSearchResults('');
-          },
-        ),
-        const SizedBox(height: 12),
+
+        if (_showShopDetails) ...[
+          ItemSearchBar(
+            controller: _searchController,
+            onTap: () {},
+            onChanged: _filterSearchResults,
+            onClear: () {
+              _searchController.clear();
+              _filterSearchResults('');
+            },
+          ),
+          const SizedBox(height: 12),
+        ],
+
         Expanded(
           child: _showShopDetails ? _buildShopDetailsView() : _buildCartView(),
         ),
+
         if (!_showShopDetails && _addedItems.isNotEmpty)
           CheckoutBar(
             total: _calculateTotal(),
-            onPressed: _placeOrderAndGetPdf,
+            title: 'Save Order',
+            onPressed: _confirmSaveOrder,
           ),
       ],
     );
@@ -687,19 +731,20 @@ void _filterSearchResults(String query) {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Available Items',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey[800],
+              Expanded(
+                child: Text(
+                  'Add Items',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey[800],
+                  ),
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.close),
+              TextButton(
                 onPressed: () => setState(() => _showShopDetails = false),
+                child: const Text('Back to Cart'),
               ),
             ],
           ),
@@ -731,7 +776,7 @@ void _filterSearchResults(String query) {
       itemCount: _filteredDetails.length,
       itemBuilder: (context, index) {
         final item = _filteredDetails[index];
-        final rate = _getItemNetRate(item);
+        final rate = _getItemRate(item);
         final uom = (item['item_uom'] ?? '').toString();
 
         // ✅ force numeric type safely
@@ -770,7 +815,7 @@ void _filterSearchResults(String query) {
             ),
             const SizedBox(height: 16),
             Text(
-              'Your cart is empty',
+              'No items in this order',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
@@ -779,8 +824,26 @@ void _filterSearchResults(String query) {
             ),
             const SizedBox(height: 8),
             Text(
-              'Tap the search bar to add items',
+              'Tap below to add items',
               style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () => setState(() => _showShopDetails = true),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Items'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6C63FF),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 14,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                elevation: 0,
+              ),
             ),
           ],
         ),
@@ -791,14 +854,28 @@ void _filterSearchResults(String query) {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Text(
-            'Your Cart',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey[800],
-            ),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Your Cart',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey[800],
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: () => setState(() => _showShopDetails = true),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Add Items'),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF6C63FF),
+                ),
+              ),
+            ],
           ),
         ),
         Expanded(
@@ -818,7 +895,6 @@ void _filterSearchResults(String query) {
       ],
     );
   }
-
   // ==================== DIALOG METHODS (UNCHANGED INSIDE) ====================
 
   void _showItemDialog(Map<String, dynamic> item) {
@@ -1324,41 +1400,4 @@ void _filterSearchResults(String query) {
           ),
     );
   }
-}
-
-Widget _buildGeneratingBillLoader() {
-  return Container(
-    color: Colors.white.withOpacity(0.95),
-    child: Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const SizedBox(height: 20),
-
-          const CircularProgressIndicator(
-            color: Color(0xFF6C63FF),
-            strokeWidth: 3,
-          ),
-
-          const SizedBox(height: 24),
-
-          const Text(
-            "Generating Bill...",
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFF6C63FF),
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          Text(
-            "Please wait while we prepare your invoice",
-            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-          ),
-        ],
-      ),
-    ),
-  );
 }

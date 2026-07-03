@@ -6,8 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:ezbiz/Consts/consts.dart';
-
-
+import 'package:intl/intl.dart';
 
 class OrderHistoryPage extends StatefulWidget {
   const OrderHistoryPage({Key? key}) : super(key: key);
@@ -43,6 +42,54 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
 
   // Scroll
   final ScrollController _scrollController = ScrollController();
+  final NumberFormat _moneyFormat = NumberFormat('#,##0.##');
+
+  String _formatMoney(dynamic value) {
+    final n =
+        value is num
+            ? value.toDouble()
+            : double.tryParse(value.toString()) ?? 0;
+    return _moneyFormat.format(n);
+  }
+
+  Widget _modernStatPill({
+    required String label,
+    required String value,
+    required Color bg,
+    required Color fg,
+  }) {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 10.h),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.sp,
+              fontWeight: FontWeight.w600,
+              color: fg.withOpacity(0.75),
+            ),
+          ),
+          SizedBox(height: 4.h),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14.sp,
+              fontWeight: FontWeight.w800,
+              color: fg,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -158,9 +205,11 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
 
       if (res.statusCode == 200) {
         final Map<String, dynamic> jsonData = jsonDecode(res.body);
-
-        final pagination = (jsonData["pagination"] as Map?)?.cast<String, dynamic>() ?? {};
-        final subtotal = (jsonData["subtotal"] as Map?)?.cast<String, dynamic>() ?? {};
+        print("Data from orders ${jsonData}");
+        final pagination =
+            (jsonData["pagination"] as Map?)?.cast<String, dynamic>() ?? {};
+        final subtotal =
+            (jsonData["subtotal"] as Map?)?.cast<String, dynamic>() ?? {};
 
         final List<dynamic> data = (jsonData["data"] as List?) ?? [];
 
@@ -332,7 +381,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
           ),
         ],
       ),
-    
+
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -370,7 +419,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
               Expanded(
                 child: _statCard(
                   "Total Amount",
-                  "₹${_subtotalTrxTotal.toStringAsFixed(2)}",
+                  "₹${_formatMoney(_subtotalTrxTotal)}",
                   Color(0xFFEEEDFF),
                   Color(0xFF6C63FF),
                 ),
@@ -379,7 +428,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
               Expanded(
                 child: _statCard(
                   "Net Amount",
-                  "₹${_subtotalTrxNet.toStringAsFixed(2)}",
+                  "₹${_formatMoney(_subtotalTrxNet)}",
                   Color(0xFFE8F5E9),
                   Color(0xFF4CAF50),
                 ),
@@ -396,7 +445,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
             ),
           ),
         ],
-      )
+      ),
     );
   }
 
@@ -447,126 +496,156 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
   Widget _orderTile(Map<String, dynamic> o) {
     final ordNo = o["ord_no"]?.toString() ?? "-";
     final ordDate = o["ord_date"]?.toString() ?? "-";
-    final trxTotal = (o["trx_total"] ?? 0).toString();
-    final trxNet = (o["trx_netamount"] ?? 0).toString();
+    final trxTotal = o["trx_total"] ?? 0;
+    final trxNet = o["trx_netamount"] ?? 0;
     final status = o["status_flag"]?.toString() ?? "-";
-    final custName = o["cust_name"]?.toString().trim() ?? "";
-
+    final custName = (o["cust_name"] ?? "").toString().trim();
 
     return GestureDetector(
-      onTap: () {
-        // Navigate to Order Detail Page
-        Navigator.push(
+      onTap: () async {
+        final deletedOrUpdated = await Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (context) => OrderDetailPage(
-              ordNo: int.parse(ordNo),
-            ),
+            builder:
+                (context) => OrderDetailPage(ordNo: int.tryParse(ordNo) ?? 0),
           ),
         );
+
+        if (deletedOrUpdated == true) {
+          await _refresh();
+        }
       },
       child: Container(
-        margin: EdgeInsets.symmetric(horizontal: 20.w, vertical: 8.h),
+        margin: EdgeInsets.symmetric(horizontal: 20.w, vertical: 7.h),
         padding: EdgeInsets.all(16.w),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.08)),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 15,
-              offset: Offset(0, 4),
+              color: Colors.black.withOpacity(0.045),
+              blurRadius: 18,
+              offset: const Offset(0, 6),
             ),
           ],
         ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-  "Order #$ordNo",
-  style: TextStyle(
-    fontSize: 16.sp,
-    fontWeight: FontWeight.bold,
-    color: Colors.black87,
-  ),
-),
-if (custName.isNotEmpty) ...[
-  SizedBox(height: 4.h),
- Text(
-  custName,
-  style: TextStyle(
-    fontSize: 15.sp, // ✅ bigger
-    fontWeight: FontWeight.w800,
-    color: const Color(0xFF6C63FF), // ✅ app purple
-  ),
-  maxLines: 1,
-  overflow: TextOverflow.ellipsis,
-),
-
-],
-SizedBox(height: 4.h),
-Text(
-  ordDate,
-  style: TextStyle(
-    color: Colors.black54,
-    fontWeight: FontWeight.w500,
-    fontSize: 13.sp,
-  ),
-),
-
-                  ],
-                ),
-              ),
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 6.h),
-                decoration: BoxDecoration(
-                  color: _statusColor(status).withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  _statusText(status),
-                  style: TextStyle(
-                    color: _statusColor(status),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12.sp,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 14.h),
-          Container(
-            padding: EdgeInsets.all(12.w),
-            decoration: BoxDecoration(
-              color: Color(0xFFF8F9FE),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // top row
+            Row(
               children: [
                 Expanded(
-                  child: _orderStatItem("Total", "₹$trxTotal"),
+                  child: Text(
+                    "Order #$ordNo",
+                    style: TextStyle(
+                      fontSize: 15.sp,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.black87,
+                    ),
+                  ),
                 ),
                 Container(
-                  width: 1,
-                  height: 30.h,
-                  color: Colors.black12,
-                ),
-                Expanded(
-                  child: _orderStatItem("Net", "₹$trxNet"),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: 10.w,
+                    vertical: 6.h,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _statusColor(status).withOpacity(0.10),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                  child: Text(
+                    _statusText(status),
+                    style: TextStyle(
+                      color: _statusColor(status),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11.sp,
+                    ),
+                  ),
                 ),
               ],
             ),
-          ),
-        ],
+
+            SizedBox(height: 10.h),
+
+            // customer name
+            if (custName.isNotEmpty)
+              Text(
+                custName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 16.sp,
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF6C63FF),
+                ),
+              ),
+
+            if (custName.isNotEmpty) SizedBox(height: 6.h),
+
+            // date row
+            Row(
+              children: [
+                Icon(
+                  Icons.calendar_today_rounded,
+                  size: 14.sp,
+                  color: Colors.black45,
+                ),
+                SizedBox(width: 6.w),
+                Text(
+                  ordDate,
+                  style: TextStyle(
+                    color: Colors.black54,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 13.sp,
+                  ),
+                ),
+              ],
+            ),
+
+            SizedBox(height: 14.h),
+
+            // amount row
+            Row(
+              children: [
+                Expanded(
+                  child: _modernStatPill(
+                    label: "Total",
+                    value: "₹${_formatMoney(trxTotal)}",
+                    bg: const Color(0xFFF3F0FF),
+                    fg: const Color(0xFF6C63FF),
+                  ),
+                ),
+                SizedBox(width: 10.w),
+                Expanded(
+                  child: _modernStatPill(
+                    label: "Net",
+                    value: "₹${_formatMoney(trxNet)}",
+                    bg: const Color(0xFFEAF8EC),
+                    fg: const Color(0xFF2E7D32),
+                  ),
+                ),
+                SizedBox(width: 8.w),
+                Container(
+                  height: 42.w,
+                  width: 42.w,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8F9FE),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.black45,
+                    size: 24.sp,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
-    ));
+    );
   }
 
   Widget _orderStatItem(String label, String value) {
@@ -598,7 +677,7 @@ Text(
     final toText = _toDate == null ? "To Date" : _fmt(_toDate!);
 
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 16.h),
+      padding: EdgeInsets.fromLTRB(20.w, 12.h, 20.w, 8.h),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -642,12 +721,19 @@ Text(
                 child: GestureDetector(
                   onTap: _pickFromDate,
                   child: Container(
-                    padding: EdgeInsets.symmetric(vertical: 12.h, horizontal: 12.w),
+                    padding: EdgeInsets.symmetric(
+                      vertical: 12.h,
+                      horizontal: 12.w,
+                    ),
                     decoration: BoxDecoration(
-                      color: _fromDate != null ? Color(0xFFEEEDFF) : Colors.white,
+                      color:
+                          _fromDate != null ? Color(0xFFEEEDFF) : Colors.white,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: _fromDate != null ? Color(0xFF6C63FF) : Colors.black12,
+                        color:
+                            _fromDate != null
+                                ? Color(0xFF6C63FF)
+                                : Colors.black12,
                       ),
                     ),
                     child: Row(
@@ -656,7 +742,10 @@ Text(
                         Icon(
                           Icons.calendar_today,
                           size: 16.w,
-                          color: _fromDate != null ? Color(0xFF6C63FF) : Colors.black54,
+                          color:
+                              _fromDate != null
+                                  ? Color(0xFF6C63FF)
+                                  : Colors.black54,
                         ),
                         SizedBox(width: 8.w),
                         Text(
@@ -664,7 +753,10 @@ Text(
                           style: TextStyle(
                             fontSize: 13.sp,
                             fontWeight: FontWeight.w600,
-                            color: _fromDate != null ? Color(0xFF6C63FF) : Colors.black54,
+                            color:
+                                _fromDate != null
+                                    ? Color(0xFF6C63FF)
+                                    : Colors.black54,
                           ),
                         ),
                       ],
@@ -677,12 +769,18 @@ Text(
                 child: GestureDetector(
                   onTap: _pickToDate,
                   child: Container(
-                    padding: EdgeInsets.symmetric(vertical: 12.h, horizontal: 12.w),
+                    padding: EdgeInsets.symmetric(
+                      vertical: 12.h,
+                      horizontal: 12.w,
+                    ),
                     decoration: BoxDecoration(
                       color: _toDate != null ? Color(0xFFEEEDFF) : Colors.white,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
-                        color: _toDate != null ? Color(0xFF6C63FF) : Colors.black12,
+                        color:
+                            _toDate != null
+                                ? Color(0xFF6C63FF)
+                                : Colors.black12,
                       ),
                     ),
                     child: Row(
@@ -691,7 +789,10 @@ Text(
                         Icon(
                           Icons.calendar_today,
                           size: 16.w,
-                          color: _toDate != null ? Color(0xFF6C63FF) : Colors.black54,
+                          color:
+                              _toDate != null
+                                  ? Color(0xFF6C63FF)
+                                  : Colors.black54,
                         ),
                         SizedBox(width: 8.w),
                         Text(
@@ -699,7 +800,10 @@ Text(
                           style: TextStyle(
                             fontSize: 13.sp,
                             fontWeight: FontWeight.w600,
-                            color: _toDate != null ? Color(0xFF6C63FF) : Colors.black54,
+                            color:
+                                _toDate != null
+                                    ? Color(0xFF6C63FF)
+                                    : Colors.black54,
                           ),
                         ),
                       ],
@@ -717,11 +821,7 @@ Text(
                       color: Colors.red.shade50,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Icon(
-                      Icons.clear,
-                      size: 20.w,
-                      color: Colors.red,
-                    ),
+                    child: Icon(Icons.clear, size: 20.w, color: Colors.red),
                   ),
                 ),
               ],
@@ -760,98 +860,102 @@ Text(
             ),
           ],
         ),
-        body: _isInitialLoading
-            ? _buildShimmerLoading()
-            : RefreshIndicator(
-                onRefresh: _refresh,
-                color: Color(0xFF6C63FF),
-                child: Column(
-                  children: [
-                    _filtersBar(),
-                    _subtotalCard(),
-                    Expanded(
-                      child: Stack(
-                        children: [
-                          if (_orders.isEmpty)
-                            Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.receipt_long_outlined,
-                                    size: 80.w,
-                                    color: Colors.black26,
-                                  ),
-                                  SizedBox(height: 16.h),
-                                  Text(
-                                    "No orders found",
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 16.sp,
-                                      color: Colors.black54,
+        body:
+            _isInitialLoading
+                ? _buildShimmerLoading()
+                : RefreshIndicator(
+                  onRefresh: _refresh,
+                  color: Color(0xFF6C63FF),
+                  child: Column(
+                    children: [
+                      _filtersBar(),
+                      _subtotalCard(),
+                      Expanded(
+                        child: Stack(
+                          children: [
+                            if (_orders.isEmpty)
+                              Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.receipt_long_outlined,
+                                      size: 80.w,
+                                      color: Colors.black26,
                                     ),
-                                  ),
-                                  SizedBox(height: 8.h),
-                                  Text(
-                                    "Try adjusting your filters",
-                                    style: TextStyle(
-                                      fontSize: 13.sp,
-                                      color: Colors.black38,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            )
-                          else
-                            ListView.builder(
-                              controller: _scrollController,
-                              physics: AlwaysScrollableScrollPhysics(),
-                              padding: EdgeInsets.only(bottom: 20.h),
-                              itemCount: _orders.length + (_isPageLoading ? 1 : 0),
-                              itemBuilder: (context, index) {
-                                if (index == _orders.length) {
-                                  return Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 18.h),
-                                    child: Center(
-                                      child: SizedBox(
-                                        height: 24.w,
-                                        width: 24.w,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: Color(0xFF6C63FF),
-                                        ),
+                                    SizedBox(height: 16.h),
+                                    Text(
+                                      "No matching orders",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 16.sp,
+                                        color: Colors.black54,
                                       ),
                                     ),
-                                  );
-                                }
-                                return _orderTile(_orders[index]);
-                              },
-                            ),
-                          if (!_hasMore && _orders.isNotEmpty)
-                            Positioned(
-                              bottom: 0,
-                              left: 0,
-                              right: 0,
-                              child: Container(
-                                padding: EdgeInsets.symmetric(vertical: 18.h),
-                                child: Center(
-                                  child: Text(
-                                    "No more orders",
-                                    style: TextStyle(
-                                      color: Colors.black54,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 13.sp,
+                                    SizedBox(height: 8.h),
+                                    Text(
+                                      "Change the status or date filters to see results",
+                                      style: TextStyle(
+                                        fontSize: 13.sp,
+                                        color: Colors.black38,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            else
+                              ListView.builder(
+                                controller: _scrollController,
+                                physics: AlwaysScrollableScrollPhysics(),
+                                padding: EdgeInsets.only(bottom: 20.h),
+                                itemCount:
+                                    _orders.length + (_isPageLoading ? 1 : 0),
+                                itemBuilder: (context, index) {
+                                  if (index == _orders.length) {
+                                    return Padding(
+                                      padding: EdgeInsets.symmetric(
+                                        vertical: 18.h,
+                                      ),
+                                      child: Center(
+                                        child: SizedBox(
+                                          height: 24.w,
+                                          width: 24.w,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Color(0xFF6C63FF),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  return _orderTile(_orders[index]);
+                                },
+                              ),
+                            if (!_hasMore && _orders.isNotEmpty)
+                              Positioned(
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                child: Container(
+                                  padding: EdgeInsets.symmetric(vertical: 18.h),
+                                  child: Center(
+                                    child: Text(
+                                      "No more orders",
+                                      style: TextStyle(
+                                        color: Colors.black54,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13.sp,
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
       ),
     );
   }

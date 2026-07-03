@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:ezbiz/Consts/consts.dart';
+import 'package:ezbiz/pages/edit_order_page.dart';
 
 class OrderDetailPage extends StatefulWidget {
   final int ordNo;
@@ -19,11 +20,29 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
   bool _isLoading = true;
   Map<String, dynamic>? _orderData;
   String? _errorMessage;
-
+  bool _isEditMode = false;
+  bool _isSaving = false;
+  List<Map<String, dynamic>> _editableItems = [];
   @override
   void initState() {
     super.initState();
     _fetchOrderDetails();
+  }
+
+  void _showTopSnack(String message, {bool isError = false}) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor:
+            isError ? Colors.red.shade400 : const Color(0xFF6C63FF),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 80, 16, 0),
+        duration: const Duration(milliseconds: 1200),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
   }
 
   Future<Map<String, String>> _authHeaders() async {
@@ -38,6 +57,172 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
       "Content-Type": "application/json",
       "Authorization": "Bearer $token",
     };
+  }
+
+  Future<void> _saveOrderEdits() async {
+    try {
+      setState(() => _isSaving = true);
+
+      final headers = await _authHeaders();
+
+      final customer = _orderData!["order"]["customer"];
+
+      final payload = {
+        "ord_date": _orderData!["order"]["ord_date"],
+        "ord_time": _orderData!["order"]["ord_time"],
+        "status_flag": _orderData!["order"]["status"] == "BILLED" ? "Y" : "N",
+        "customer": {
+          "code": customer["code"],
+          "name": customer["name"],
+          "phone": customer["phone"],
+          "address": customer["address"],
+          "area": customer["area"],
+        },
+        "items":
+            _editableItems.map((item) {
+              return {
+                "item_code": item["item_code"],
+                "item_name": item["item_name"],
+                "qty": item["qty"],
+                "mrp": item["mrp"],
+                "price": item["price"],
+                "tax": item["tax"],
+                "discount": item["discount"],
+                "cess": item["cess"] ?? 0,
+              };
+            }).toList(),
+      };
+
+      final response = await http.put(
+        Uri.parse("$baseUrl/orders/${widget.ordNo}"),
+        headers: headers,
+        body: jsonEncode(payload),
+      );
+
+      if (response.statusCode == 200) {
+        if (!mounted) return;
+        setState(() => _isEditMode = false);
+        await _fetchOrderDetails();
+        _showTopSnack("Order updated successfully");
+      } else {
+        _showTopSnack("Failed to update order");
+      }
+    } catch (e) {
+      _showTopSnack("Error: $e");
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _deleteOrder() async {
+    try {
+      final headers = await _authHeaders();
+
+      final response = await http.delete(
+        Uri.parse("$baseUrl/orders/${widget.ordNo}"),
+        headers: headers,
+      );
+
+      if (response.statusCode == 200) {
+        if (!mounted) return;
+        Navigator.pop(context, {
+          "deleted": true,
+          "message": "Order deleted successfully",
+        });
+      } else {
+        print("error when deleting : ${response.body}");
+
+        _showTopSnack("Failed to delete order");
+      }
+    } catch (e) {
+      print("error when deleting : ${e}");
+      _showTopSnack("Error: $e");
+    }
+  }
+
+  Future<void> _confirmSaveEdits() async {
+    if (_editableItems.isEmpty) {
+      _showTopSnack("Add at least one item before saving", isError: true);
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => AlertDialog(
+            title: const Text("Save changes?"),
+            content: const Text(
+              "This will update the order and all its items.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("Save"),
+              ),
+            ],
+          ),
+    );
+
+    if (ok == true) {
+      await _saveOrderEdits();
+    }
+  }
+
+  Future<void> _confirmDeleteOrder() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => AlertDialog(
+            title: const Text("Delete order?"),
+            content: const Text(
+              "This will permanently remove the order and all items.",
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text("Delete"),
+              ),
+            ],
+          ),
+    );
+
+    if (ok == true) {
+      await _deleteOrder();
+    }
+  }
+
+  void _addNewItem() {
+    setState(() {
+      _editableItems.add({
+        "line_no": _editableItems.length + 1,
+        "item_code": "",
+        "item_name": "",
+        "qty": 1,
+        "mrp": 0,
+        "price": 0,
+        "tax": 0,
+        "discount": 0,
+        "cess": 0,
+        "total": 0,
+      });
+    });
+  }
+
+  void _removeItemAt(int index) {
+    setState(() {
+      _editableItems.removeAt(index);
+      for (int i = 0; i < _editableItems.length; i++) {
+        _editableItems[i]["line_no"] = i + 1;
+      }
+    });
   }
 
   Future<void> _fetchOrderDetails() async {
@@ -56,6 +241,9 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
         final data = jsonDecode(response.body);
         setState(() {
           _orderData = data;
+          _editableItems = List<Map<String, dynamic>>.from(
+            (data["items"] as List).map((e) => Map<String, dynamic>.from(e)),
+          );
           _isLoading = false;
         });
       } else if (response.statusCode == 401) {
@@ -78,8 +266,10 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
   }
 
   Color _statusColor(String status) {
-    if (status.toUpperCase() == "BILLED" || status == "Y") return Color(0xFF4CAF50);
-    if (status.toUpperCase() == "PENDING" || status == "N") return Color(0xFFFF9800);
+    if (status.toUpperCase() == "BILLED" || status == "Y")
+      return Color(0xFF4CAF50);
+    if (status.toUpperCase() == "PENDING" || status == "N")
+      return Color(0xFFFF9800);
     return Colors.grey;
   }
 
@@ -120,11 +310,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.error_outline,
-              size: 80.w,
-              color: Colors.red.shade300,
-            ),
+            Icon(Icons.error_outline, size: 80.w, color: Colors.red.shade300),
             SizedBox(height: 16.h),
             Text(
               _errorMessage ?? "Something went wrong",
@@ -251,43 +437,50 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
                   ),
                 ),
               ),
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 10.w, vertical: 4.h),
-                decoration: BoxDecoration(
-                  color: Color(0xFFEEEDFF),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  "Item #$lineNo",
-                  style: TextStyle(
-                    fontSize: 11.sp,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF6C63FF),
+
+              if (_isEditMode)
+                IconButton(
+                  onPressed: () {
+                    final index = _editableItems.indexOf(item);
+                    if (index != -1) {
+                      _removeItemAt(index);
+                    }
+                  },
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                )
+              else
+                Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: 10.w,
+                    vertical: 4.h,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEEDFF),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    "Item #$lineNo",
+                    style: TextStyle(
+                      fontSize: 11.sp,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF6C63FF),
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
           SizedBox(height: 12.h),
           Row(
             children: [
-              Expanded(
-                child: _itemDetail("Qty", qty),
-              ),
-              Expanded(
-                child: _itemDetail("Price", "₹$price"),
-              ),
-              Expanded(
-                child: _itemDetail("Tax", "$tax%"),
-              ),
+              Expanded(child: _itemDetail("Qty", qty)),
+              Expanded(child: _itemDetail("Price", "₹$price")),
+              Expanded(child: _itemDetail("Tax", "$tax%")),
             ],
           ),
           SizedBox(height: 8.h),
           Row(
             children: [
-              Expanded(
-                child: _itemDetail("Discount", "$discount%"),
-              ),
+              Expanded(child: _itemDetail("Discount", "$discount%")),
               Expanded(
                 flex: 2,
                 child: Container(
@@ -446,155 +639,231 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
           actions: [
             if (!_isLoading)
               IconButton(
+                onPressed: () async {
+                  if (_orderData == null) return;
+
+                  final updated = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder:
+                          (_) => EditOrderPage(
+                            ordNo: widget.ordNo,
+                            orderData: _orderData!,
+                          ),
+                    ),
+                  );
+
+                  if (updated == true) {
+                    _fetchOrderDetails();
+                  }
+                },
+                icon: const Icon(Icons.edit_outlined, color: Color(0xFF6C63FF)),
+              ),
+            if (!_isLoading)
+              IconButton(
+                onPressed: _confirmDeleteOrder,
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+              ),
+            if (!_isLoading)
+              IconButton(
                 onPressed: _fetchOrderDetails,
-                icon: Icon(Icons.refresh, color: Color(0xFF6C63FF)),
+                icon: const Icon(Icons.refresh, color: Color(0xFF6C63FF)),
               ),
           ],
         ),
-        body: _isLoading
-            ? _buildShimmerLoading()
-            : _errorMessage != null
+        body: Stack(
+          children: [
+            _isLoading
+                ? _buildShimmerLoading()
+                : _errorMessage != null
                 ? _buildErrorState()
                 : RefreshIndicator(
-                    onRefresh: _fetchOrderDetails,
-                    color: Color(0xFF6C63FF),
-                    child: SingleChildScrollView(
-                      physics: AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.all(20.w),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Order Header
-                          _buildInfoCard(
-                            title: "Order Information",
-                            children: [
-                              _buildInfoRow(
-                                "Order Number",
-                                _orderData!["order"]["ord_no"].toString(),
-                                isBold: true,
-                              ),
-                              _buildInfoRow(
-                                "Date",
-                                _orderData!["order"]["ord_date"].toString(),
-                              ),
-                              _buildInfoRow(
-                                "Time",
-                                _orderData!["order"]["ord_time"].toString(),
-                              ),
-                              Padding(
-                                padding: EdgeInsets.only(top: 4.h),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      "Status",
+                  onRefresh: _fetchOrderDetails,
+                  color: const Color(0xFF6C63FF),
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: EdgeInsets.all(20.w),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Order Header
+                        _buildInfoCard(
+                          title: "Order Information",
+                          children: [
+                            _buildInfoRow(
+                              "Order Number",
+                              _orderData!["order"]["ord_no"].toString(),
+                              isBold: true,
+                            ),
+                            _buildInfoRow(
+                              "Date",
+                              _orderData!["order"]["ord_date"].toString(),
+                            ),
+                            _buildInfoRow(
+                              "Time",
+                              _orderData!["order"]["ord_time"].toString(),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.only(top: 4.h),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    "Status",
+                                    style: TextStyle(
+                                      fontSize: 13.sp,
+                                      color: Colors.black54,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: 12.w,
+                                      vertical: 6.h,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _statusColor(
+                                        _orderData!["order"]["status"]
+                                            .toString(),
+                                      ).withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(
+                                      _statusText(
+                                        _orderData!["order"]["status"]
+                                            .toString(),
+                                      ),
                                       style: TextStyle(
-                                        fontSize: 13.sp,
-                                        color: Colors.black54,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    Container(
-                                      padding: EdgeInsets.symmetric(
-                                        horizontal: 12.w,
-                                        vertical: 6.h,
-                                      ),
-                                      decoration: BoxDecoration(
                                         color: _statusColor(
-                                          _orderData!["order"]["status"].toString(),
-                                        ).withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(20),
-                                      ),
-                                      child: Text(
-                                        _statusText(
-                                          _orderData!["order"]["status"].toString(),
+                                          _orderData!["order"]["status"]
+                                              .toString(),
                                         ),
-                                        style: TextStyle(
-                                          color: _statusColor(
-                                            _orderData!["order"]["status"].toString(),
-                                          ),
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 12.sp,
-                                        ),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12.sp,
                                       ),
                                     ),
-                                  ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        _buildInfoCard(
+                          title: "Customer Details",
+                          children: [
+                            _buildInfoRow(
+                              "Name",
+                              _orderData!["order"]["customer"]["name"]
+                                      ?.toString() ??
+                                  "-",
+                              isBold: true,
+                            ),
+                            _buildInfoRow(
+                              "Code",
+                              _orderData!["order"]["customer"]["code"]
+                                      ?.toString() ??
+                                  "-",
+                            ),
+                            _buildInfoRow(
+                              "Phone",
+                              _orderData!["order"]["customer"]["phone"]
+                                      ?.toString() ??
+                                  "-",
+                            ),
+                            _buildInfoRow(
+                              "Address",
+                              _orderData!["order"]["customer"]["address"]
+                                      ?.toString() ??
+                                  "-",
+                            ),
+                            _buildInfoRow(
+                              "Area",
+                              _orderData!["order"]["customer"]["area"]
+                                      ?.toString() ??
+                                  "-",
+                            ),
+                          ],
+                        ),
+
+                        _buildInfoCard(
+                          title: "Order Totals",
+                          children: [
+                            _buildInfoRow(
+                              "Total Amount",
+                              "₹${_orderData!["order"]["totals"]["trx_total"]}",
+                              isBold: true,
+                            ),
+                            _buildInfoRow(
+                              "Net Amount",
+                              "₹${_orderData!["order"]["totals"]["trx_netamount"]}",
+                              isBold: true,
+                            ),
+                          ],
+                        ),
+
+                        Text(
+                          "Order Items",
+                          style: TextStyle(
+                            fontSize: 18.sp,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
+                        SizedBox(height: 12.h),
+
+                        ..._editableItems
+                            .map((item) => _buildItemCard(item))
+                            .toList(),
+
+                        if (_isEditMode) ...[
+                          SizedBox(height: 8.h),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _addNewItem,
+                              icon: const Icon(
+                                Icons.add,
+                                color: Color(0xFF6C63FF),
+                              ),
+                              label: const Text(
+                                "Add New Item",
+                                style: TextStyle(
+                                  color: Color(0xFF6C63FF),
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
-                            ],
-                          ),
-
-                          // Customer Info
-                          _buildInfoCard(
-                            title: "Customer Details",
-                            children: [
-                              // _buildInfoRow(
-                              //   "Name",
-                              //   _orderData!["order"]["customer"]["name"].toString(),
-                              //   isBold: true,
-                              // ),
-                              _buildInfoRow(
-                                "Code",
-                                _orderData!["order"]["customer"]["code"].toString(),
+                              style: OutlinedButton.styleFrom(
+                                padding: EdgeInsets.symmetric(vertical: 14.h),
+                                side: const BorderSide(
+                                  color: Color(0xFF6C63FF),
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
                               ),
-                              // _buildInfoRow(
-                              //   "Phone",
-                              //   _orderData!["order"]["customer"]["phone"].toString(),
-                              // ),
-                              // _buildInfoRow(
-                              //   "Address",
-                              //   _orderData!["order"]["customer"]["address"].toString(),
-                              // ),
-                              // _buildInfoRow(
-                              //   "Area",
-                              //   _orderData!["order"]["customer"]["area"].toString(),
-                              // ),
-                            ],
-                          ),
-
-                          // Order Totals
-                          _buildInfoCard(
-                            title: "Order Totals",
-                            children: [
-                              _buildInfoRow(
-                                "Total Amount",
-                                "₹${_orderData!["order"]["totals"]["trx_total"]}",
-                                isBold: true,
-                              ),
-                              _buildInfoRow(
-                                "Net Amount",
-                                "₹${_orderData!["order"]["totals"]["trx_netamount"]}",
-                                isBold: true,
-                              ),
-                            ],
-                          ),
-
-                          // Items
-                          Text(
-                            "Order Items",
-                            style: TextStyle(
-                              fontSize: 18.sp,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.black87,
                             ),
                           ),
-                          SizedBox(height: 12.h),
-                          ...(_orderData!["items"] as List)
-                              .map((item) => _buildItemCard(item))
-                              .toList(),
-
-                          SizedBox(height: 8.h),
-
-                          // Summary
-                          _buildSummaryCard(
-                            _orderData!["computed_summary"],
-                          ),
-
-                          SizedBox(height: 20.h),
                         ],
-                      ),
+
+                        SizedBox(height: 8.h),
+                        _buildSummaryCard(_orderData!["computed_summary"]),
+                        SizedBox(height: 20.h),
+                      ],
                     ),
                   ),
+                ),
+
+            if (_isSaving)
+              Container(
+                color: Colors.white.withOpacity(0.75),
+                child: const Center(
+                  child: CircularProgressIndicator(color: Color(0xFF6C63FF)),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

@@ -1,5 +1,6 @@
 // lib/widgets/cart_item_card.dart
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class CartItemCard extends StatelessWidget {
   final Map<String, dynamic> item;
@@ -13,6 +14,19 @@ class CartItemCard extends StatelessWidget {
     required this.onDelete,
   }) : super(key: key);
 
+  String formatQty(dynamic qty) {
+    final n = qty is num ? qty : double.tryParse(qty.toString()) ?? 0;
+    return n % 1 == 0 ? n.toInt().toString() : n.toString();
+  }
+
+  String formatMoney(dynamic value) {
+    final n =
+        value is num
+            ? value.toDouble()
+            : double.tryParse(value.toString()) ?? 0;
+    return NumberFormat('#,##0.##').format(n);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -21,8 +35,7 @@ class CartItemCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        border:
-            Border.all(color: const Color(0xFF6C63FF).withOpacity(0.2)),
+        border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.2)),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.06),
@@ -64,13 +77,12 @@ class CartItemCard extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      'Qty: ${item['qty']}',
-                      style: TextStyle(
-                          fontSize: 13, color: Colors.grey[600]),
+                      'Qty: ${formatQty(item['qty'])}',
+                      style: TextStyle(fontSize: 13, color: Colors.grey[600]),
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      '₹${item['subtotal']}',
+                      '₹${formatMoney(item['subtotal'])}',
                       style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
@@ -90,8 +102,10 @@ class CartItemCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: IconButton(
-                  icon: const Icon(Icons.edit_outlined,
-                      color: Color(0xFF6C63FF)),
+                  icon: const Icon(
+                    Icons.edit_outlined,
+                    color: Color(0xFF6C63FF),
+                  ),
                   onPressed: onEdit,
                 ),
               ),
@@ -102,8 +116,7 @@ class CartItemCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: IconButton(
-                  icon: const Icon(Icons.delete_outline,
-                      color: Colors.red),
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
                   onPressed: onDelete,
                 ),
               ),

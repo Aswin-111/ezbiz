@@ -43,7 +43,8 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   List<Map<String, dynamic>> _filteredDetails = [];
   final List<Map<String, dynamic>> _addedItems = [];
 
-  bool _isLoading = true;
+  bool _isFetchingItems = true;
+  bool _isGeneratingBill = false;
   bool _showShopDetails = false;
   bool _isItemAlreadyAdded(Map<String, dynamic> item) {
     return _addedItems.any((e) => e['item_code'] == item['item_code']);
@@ -110,55 +111,117 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   // ==================== API CALLS ====================
 
   Future<void> _fetchUserDetails() async {
+    if (mounted) {
+      setState(() {
+        _isFetchingItems = true;
+      });
+    }
+
     try {
       final headers = await authHeaders();
+
       final response = await http.post(
         Uri.parse('$baseUrl/shopdetails'),
         headers: headers,
-        body: jsonEncode({}),
+        body: jsonEncode({'comp_code': widget.compCode}),
       );
 
-      if (response.statusCode == 200) {
-        final jsonData = json.decode(response.body);
+      debugPrint('SHOP DETAILS STATUS: ${response.statusCode}');
+      debugPrint('SHOP DETAILS BODY: ${response.body}');
 
-        final rawList =
-            jsonData is List
-                ? List<Map<String, dynamic>>.from(jsonData)
-                : List<Map<String, dynamic>>.from(jsonData['details'] ?? []);
-
-        final normalized =
-            rawList
-                .map(
-                  (item) => {
-                    ...item,
-                    'item_qty': _asInt(item['item_qty']),
-                    'item_price1': _asDouble(item['item_price1']),
-                    'item_price2': _asDouble(item['item_price2']),
-                    'item_mrp': _asDouble(item['item_mrp']),
-                    'item_tax': _asDouble(item['item_tax']),
-                    'item_disc': _asDouble(item['item_disc']),
-                  },
-                )
-                .toList();
-
-        setState(() {
-          _userDetails = normalized;
-          _filteredDetails = List.from(normalized);
-          _isLoading = false;
-        });
-      } else {
-        _showErrorSnackBar(
-          "Failed to fetch details. Status: ${response.statusCode}",
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Failed to fetch items. '
+          'Status: ${response.statusCode}, '
+          'Response: ${response.body}',
         );
       }
-    } catch (e) {
-      _showErrorSnackBar("Error fetching data: $e");
+
+      final dynamic jsonData = jsonDecode(response.body);
+
+      List<dynamic> responseItems = [];
+
+      // Old backend format:
+      // [ {...}, {...} ]
+      if (jsonData is List) {
+        responseItems = jsonData;
+      }
+      // New backend formats:
+      // { "data": [...] }
+      // { "details": [...] }
+      // { "items": [...] }
+      else if (jsonData is Map<String, dynamic>) {
+        final dynamic listData =
+            jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
+
+        if (listData is List) {
+          responseItems = listData;
+        }
+      }
+
+      final normalized =
+          responseItems.whereType<Map>().map<Map<String, dynamic>>((rawItem) {
+            final item = Map<String, dynamic>.from(rawItem);
+
+            return {
+              ...item,
+              'item_code': (item['item_code'] ?? '').toString(),
+              'item_name': (item['item_name'] ?? '').toString(),
+              'item_uom': (item['item_uom'] ?? '').toString(),
+              'item_qty': _asInt(item['item_qty']),
+              'item_price1': _asDouble(item['item_price1']),
+              'item_price2': _asDouble(item['item_price2']),
+              'item_price3': _asDouble(item['item_price3']),
+              'item_price4': _asDouble(item['item_price4']),
+              'item_price5': _asDouble(item['item_price5']),
+              'item_mrp': _asDouble(item['item_mrp']),
+              'item_tax': _asDouble(item['item_tax']),
+              'item_disc': _asDouble(item['item_disc']),
+              'item_cess': _asDouble(item['item_cess']),
+            };
+          }).toList();
+
+      debugPrint('PARSED SHOP ITEM COUNT: ${normalized.length}');
+
+      if (!mounted) return;
+
+      setState(() {
+        _userDetails = normalized;
+        _filteredDetails = List<Map<String, dynamic>>.from(normalized);
+      });
+
+      if (normalized.isEmpty) {
+        _showErrorSnackBar(
+          'The API returned successfully, but no items were found.',
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('SHOP DETAILS ERROR: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (mounted) {
+        _showErrorSnackBar('Error fetching items: $error');
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isFetchingItems = false;
+        });
+      }
     }
   }
 
-  Future<void> _placeOrderAndGetPdf() async {
-    setState(() => _isLoading = true);
+ Future<void> _placeOrderAndGetPdf() async {
+  if (_addedItems.isEmpty) {
+    _showErrorSnackBar('Add at least one item');
+    return;
+  }
 
+  setState(() {
+    _isGeneratingBill = true;
+  });
+
+  try {
     final prefs = await SharedPreferences.getInstance();
     final userId = prefs.getString('user_id');
 
@@ -176,40 +239,45 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
       'order_details': _addedItems,
     };
 
-    try {
-      final headers = await authHeaders();
-      final response = await http.post(
-        Uri.parse('$baseUrl/orders'),
-        body: jsonEncode(requestBody),
-        headers: headers,
+    final headers = await authHeaders();
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/orders'),
+      body: jsonEncode(requestBody),
+      headers: headers,
+    );
+
+    if (response.statusCode != 200 &&
+        response.statusCode != 201) {
+      throw Exception(
+        'Order failed. Status: ${response.statusCode}, '
+        'Response: ${response.body}',
       );
+    }
 
-      if (response.statusCode == 200) {
-        final pdfBytes = _parsePdfBytes(response);
-        final file = await _savePdfToFile(pdfBytes);
+    final pdfBytes = _parsePdfBytes(response);
+    final file = await _savePdfToFile(pdfBytes);
 
-        setState(() {
-          _isLoading = false;
-          _addedItems.clear();
-        });
+    if (!mounted) return;
 
-        _showSuccessSnackBar('Order submitted successfully!');
-        await Future.delayed(const Duration(seconds: 2));
+    setState(() {
+      _addedItems.clear();
+    });
 
-        if (!mounted) return;
-        _navigateToPdfPreview(file);
-      } else {
-        setState(() => _isLoading = false);
-        _showErrorSnackBar(
-          'Failed to submit order. Status: ${response.statusCode}',
-        );
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-      _showErrorSnackBar('Error submitting order: $e');
+    _showSuccessSnackBar('Order submitted successfully!');
+    _navigateToPdfPreview(file);
+  } catch (error) {
+    if (mounted) {
+      _showErrorSnackBar('Error submitting order: $error');
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isGeneratingBill = false;
+      });
     }
   }
-
+}
   // ==================== HELPER METHODS ====================
 
   Uint8List _parsePdfBytes(http.Response response) {
@@ -268,20 +336,21 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     });
   }
 
-void _filterSearchResults(String query) {
-  setState(() {
-    if (query.isEmpty) {
-      _filteredDetails = List.from(_userDetails);
-    } else {
-      final q = query.toLowerCase().trim();
-      _filteredDetails = _userDetails.where((item) {
-        final code = (item['item_code'] ?? '').toString().toLowerCase();
-        final name = (item['item_name'] ?? '').toString().toLowerCase();
-        return code.contains(q) || name.contains(q);
-      }).toList();
-    }
-  });
-}
+  void _filterSearchResults(String query) {
+    setState(() {
+      if (query.isEmpty) {
+        _filteredDetails = List.from(_userDetails);
+      } else {
+        final q = query.toLowerCase().trim();
+        _filteredDetails =
+            _userDetails.where((item) {
+              final code = (item['item_code'] ?? '').toString().toLowerCase();
+              final name = (item['item_name'] ?? '').toString().toLowerCase();
+              return code.contains(q) || name.contains(q);
+            }).toList();
+      }
+    });
+  }
 
   void _addItemToOrder(
     Map<String, dynamic> oldItem,
@@ -477,7 +546,7 @@ void _filterSearchResults(String query) {
           body: Stack(
             children: [
               _buildBody(),
-              if (_isLoading) _buildGeneratingBillLoader(),
+              if (_isGeneratingBill) _buildGeneratingBillLoader(),
             ],
           ),
         ),
@@ -647,7 +716,7 @@ void _filterSearchResults(String query) {
   }
 
   Widget _buildBody() {
-    if (_isLoading) {
+    if (_isFetchingItems) {
       return _buildShimmerLoading();
     }
 

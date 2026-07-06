@@ -16,7 +16,25 @@ int computePageLimit(
   int min = 8,
   int max = 25,
 }) {
-  final h = MediaQuery.of(context).size.height;
-  final count = ((h - overhead) / cardHeight).floor();
+  return computePageLimitForHeight(
+    MediaQuery.of(context).size.height,
+    cardHeight: cardHeight,
+    overhead: overhead,
+    min: min,
+    max: max,
+  );
+}
+
+/// Pure-function variant used by [computePageLimit] and by unit tests.
+/// Kept separate so the arithmetic can be exercised without needing a
+/// `BuildContext` / widget tree.
+int computePageLimitForHeight(
+  double viewportHeight, {
+  required double cardHeight,
+  required double overhead,
+  int min = 8,
+  int max = 25,
+}) {
+  final count = ((viewportHeight - overhead) / cardHeight).floor();
   return count.clamp(min, max);
 }

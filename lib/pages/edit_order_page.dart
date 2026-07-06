@@ -9,7 +9,7 @@ import 'package:ezbiz/DetailWidgets/customer_info_card.dart';
 import 'package:ezbiz/DetailWidgets/item_searchbar.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
 import 'package:ezbiz/helper/helper.dart';
-import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/helper/responsive_page_size_mixin.dart';
 import 'package:ezbiz/models/shop_details_response.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
@@ -33,7 +33,13 @@ class EditOrderPage extends StatefulWidget {
   State<EditOrderPage> createState() => _EditOrderPageState();
 }
 
-class _EditOrderPageState extends State<EditOrderPage> {
+class _EditOrderPageState extends State<EditOrderPage>
+    with WidgetsBindingObserver, ResponsivePageSizeMixin<EditOrderPage> {
+  @override
+  double get pageCardHeight => 104;
+  @override
+  double get pageOverhead => 256;
+
   final _formKey = GlobalKey<FormState>();
   final _searchController = TextEditingController();
   final _scrollController = ScrollController();
@@ -215,13 +221,8 @@ class _EditOrderPageState extends State<EditOrderPage> {
       // Card ~92 px tall + 12 px bottom margin = 104 px per row.
       // Overhead: AppBar(56) + CustomerInfoCard(~100) + SearchBar(~60)
       //           + padding(~40) ≈ 256 px.
-      _limit = computePageLimit(
-        context,
-        cardHeight: 104,
-        overhead: 256,
-        min: 8,
-        max: 25,
-      );
+      _limit = computeInitialLimit();
+      attachResponsivePageSize();
       _fetchPage(page: 1);
     });
 
@@ -229,7 +230,15 @@ class _EditOrderPageState extends State<EditOrderPage> {
   }
 
   @override
+  void onPageLimitChanged(int newLimit) {
+    if (!mounted) return;
+    setState(() => _limit = newLimit);
+    _fetchPage(page: 1);
+  }
+
+  @override
   void dispose() {
+    detachResponsivePageSize();
     _searchController.dispose();
     _scrollController.dispose();
     _searchDebounce?.cancel();

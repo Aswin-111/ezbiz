@@ -11,7 +11,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ezbiz/helper/helper.dart';
-import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/helper/responsive_page_size_mixin.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'dart:async';
 class UserDataPage extends StatefulWidget {
@@ -19,7 +19,13 @@ class UserDataPage extends StatefulWidget {
   _UserDataPageState createState() => _UserDataPageState();
 }
 
-class _UserDataPageState extends State<UserDataPage> {
+class _UserDataPageState extends State<UserDataPage>
+    with WidgetsBindingObserver, ResponsivePageSizeMixin<UserDataPage> {
+  @override
+  double get pageCardHeight => 105;
+  @override
+  double get pageOverhead => 310;
+
   List<dynamic> _users = [];
   List<String> _areas = [];
   List<String> _allAreas = [];
@@ -44,15 +50,17 @@ class _UserDataPageState extends State<UserDataPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _limit = computePageLimit(
-        context,
-        cardHeight: 105,
-        overhead: 310,
-        min: 8,
-        max: 25,
-      );
+      _limit = computeInitialLimit();
+      attachResponsivePageSize();
       _loadCompCodeAndFetchData();
     });
+  }
+
+  @override
+  void onPageLimitChanged(int newLimit) {
+    if (!mounted) return;
+    setState(() => _limit = newLimit);
+    _refreshAndFetchFirstPage();
   }
 
   Future<void> _loadCompCodeAndFetchData() async {
@@ -223,7 +231,8 @@ class _UserDataPageState extends State<UserDataPage> {
   
  @override
   void dispose() {
-    _searchDebounce?.cancel(); // 👈 add this
+    detachResponsivePageSize();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 

@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:ezbiz/helper/helper.dart';
-import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/helper/responsive_page_size_mixin.dart';
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:intl/intl.dart';
 
@@ -17,7 +17,17 @@ class OrderHistoryPage extends StatefulWidget {
   State<OrderHistoryPage> createState() => _OrderHistoryPageState();
 }
 
-class _OrderHistoryPageState extends State<OrderHistoryPage> {
+class _OrderHistoryPageState extends State<OrderHistoryPage>
+    with WidgetsBindingObserver, ResponsivePageSizeMixin<OrderHistoryPage> {
+  @override
+  double get pageCardHeight => 135;
+  @override
+  double get pageOverhead => 240;
+  @override
+  int get pageLimitMin => 5;
+  @override
+  int get pageLimitMax => 20;
+
   // Filters
   DateTime? _fromDate;
   DateTime? _toDate;
@@ -106,19 +116,22 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _limit = computePageLimit(
-        context,
-        cardHeight: 135,
-        overhead: 240,
-        min: 5,
-        max: 20,
-      );
+      _limit = computeInitialLimit();
+      attachResponsivePageSize();
       _refresh();
     });
   }
 
   @override
+  void onPageLimitChanged(int newLimit) {
+    if (!mounted) return;
+    setState(() => _limit = newLimit);
+    _refresh();
+  }
+
+  @override
   void dispose() {
+    detachResponsivePageSize();
     _scrollController.dispose();
     super.dispose();
   }

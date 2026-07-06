@@ -10,6 +10,7 @@ import 'package:ezbiz/DetailWidgets/item_searchbar.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
 import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/models/shop_details_response.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -287,24 +288,9 @@ class _EditOrderPageState extends State<EditOrderPage> {
         return;
       }
 
-      final dynamic jsonData = json.decode(response.body);
+      final parsed = ShopDetailsResponse.fromJson(json.decode(response.body));
 
-      List<dynamic> responseItems = [];
-      int totalPages = 1;
-
-      if (jsonData is Map<String, dynamic>) {
-        totalPages = (jsonData['totalPages'] as num?)?.toInt() ?? 1;
-        final dynamic listData =
-            jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
-        if (listData is List) responseItems = listData;
-      } else if (jsonData is List) {
-        responseItems = jsonData;
-      }
-
-      final normalized = responseItems
-          .whereType<Map>()
-          .map<Map<String, dynamic>>((raw) {
-        final item = Map<String, dynamic>.from(raw);
+      final normalized = parsed.data.map<Map<String, dynamic>>((item) {
         return {
           ...item,
           'item_qty': _asInt(item['item_qty']),
@@ -320,7 +306,7 @@ class _EditOrderPageState extends State<EditOrderPage> {
 
       setState(() {
         _page = page;
-        _hasMore = page < totalPages;
+        _hasMore = page < parsed.totalPages;
         if (page == 1) {
           _userDetails = normalized;
         } else {

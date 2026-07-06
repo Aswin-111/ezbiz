@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/helper/helper.dart';
+import 'package:ezbiz/models/my_sessions_response.dart';
+import 'package:ezbiz/models/session_info.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -19,7 +21,7 @@ class _MyDevicesPageState extends State<MyDevicesPage> {
   bool _isLoading = true;
   int? _limit;
   int? _activeCount;
-  List<Map<String, dynamic>> _sessions = [];
+  List<SessionInfo> _sessions = [];
   String? _currentSessionId;
   String? _errorMessage;
   final Set<String> _revoking = {};
@@ -53,18 +55,17 @@ class _MyDevicesPageState extends State<MyDevicesPage> {
         throw Exception('Failed to load sessions (${response.statusCode})');
       }
 
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      final sessions =
-          (data['sessions'] as List?)?.cast<Map<String, dynamic>>() ??
-              const <Map<String, dynamic>>[];
+      final parsed = MySessionsResponse.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
 
       final currentId = await AuthStorage.getSessionId();
 
       if (!mounted) return;
       setState(() {
-        _limit = (data['limit'] as num?)?.toInt();
-        _activeCount = (data['active_count'] as num?)?.toInt();
-        _sessions = sessions;
+        _limit = parsed.limit;
+        _activeCount = parsed.activeCount;
+        _sessions = parsed.sessions;
         _currentSessionId = currentId;
       });
     } catch (e) {
@@ -142,10 +143,8 @@ class _MyDevicesPageState extends State<MyDevicesPage> {
     }
   }
 
-  String _formatRelative(String? iso) {
-    if (iso == null || iso.isEmpty) return '—';
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return iso;
+  String _formatRelative(DateTime? dt) {
+    if (dt == null) return '—';
     final diff = DateTime.now().difference(dt.toLocal());
     if (diff.inSeconds < 60) return 'just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
@@ -298,13 +297,11 @@ class _MyDevicesPageState extends State<MyDevicesPage> {
     );
   }
 
-  Widget _sessionCard(Map<String, dynamic> s) {
-    final sessionId = (s['session_id'] ?? '').toString();
-    final label = (s['device_label']?.toString().trim().isNotEmpty ?? false)
-        ? s['device_label'].toString()
-        : 'Unknown device';
-    final lastActive = _formatRelative(s['last_active']?.toString());
-    final issuedAt = _formatRelative(s['issued_at']?.toString());
+  Widget _sessionCard(SessionInfo s) {
+    final sessionId = s.sessionId;
+    final label = s.deviceLabel;
+    final lastActive = _formatRelative(s.lastActive);
+    final issuedAt = _formatRelative(s.issuedAt);
     final isCurrent = sessionId == _currentSessionId;
     final isRevoking = _revoking.contains(sessionId);
 

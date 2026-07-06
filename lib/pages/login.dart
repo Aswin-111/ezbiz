@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:ezbiz/Consts/consts.dart';
+import 'package:ezbiz/models/device_limit_error.dart';
+import 'package:ezbiz/models/session_info.dart';
 import 'package:ezbiz/pages/welcome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -404,10 +406,8 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
     );
   }
 
-  String _formatRelative(String? iso) {
-    if (iso == null || iso.isEmpty) return '—';
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return iso;
+  String _formatRelative(DateTime? dt) {
+    if (dt == null) return '—';
     final diff = DateTime.now().difference(dt.toLocal());
     if (diff.inSeconds < 60) return 'just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
@@ -416,13 +416,10 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
     return DateFormat('yyyy-MM-dd').format(dt.toLocal());
   }
 
-  Future<void> _showDeviceLimitDialog(Map<String, dynamic> data) async {
-    final message =
-        (data['message'] as String?) ?? 'Device login limit reached.';
-    final limit = (data['limit'] as num?)?.toInt();
-    final sessions =
-        (data['active_sessions'] as List?)?.cast<Map<String, dynamic>>() ??
-            const <Map<String, dynamic>>[];
+  Future<void> _showDeviceLimitDialog(DeviceLimitError err) async {
+    final message = err.message;
+    final limit = err.limit;
+    final sessions = err.activeSessions;
 
     await showDialog<void>(
       context: context,
@@ -486,14 +483,8 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                     separatorBuilder: (_, __) => Divider(height: 12.h),
                     itemBuilder: (_, i) {
                       final s = sessions[i];
-                      final label =
-                          (s['device_label']?.toString().trim().isNotEmpty ??
-                                  false)
-                              ? s['device_label'].toString()
-                              : 'Unknown device';
-                      final lastActive = _formatRelative(
-                        s['last_active']?.toString(),
-                      );
+                      final label = s.deviceLabel;
+                      final lastActive = _formatRelative(s.lastActive);
                       return Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -616,8 +607,10 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
     MaterialPageRoute(builder: (context) => WelcomePage()),
   );
 } else if (response.statusCode == 409) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        await _showDeviceLimitDialog(data);
+        final err = DeviceLimitError.fromJson(
+          jsonDecode(response.body) as Map<String, dynamic>,
+        );
+        await _showDeviceLimitDialog(err);
       }
 
       // if (response.statusCode == 200) {

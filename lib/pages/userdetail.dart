@@ -10,6 +10,7 @@ import 'package:ezbiz/DetailWidgets/item_searchbar.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
 import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/models/shop_details_response.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -182,50 +183,32 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
         );
       }
 
-      final dynamic jsonData = jsonDecode(response.body);
+      final parsed = ShopDetailsResponse.fromJson(jsonDecode(response.body));
 
-      // Paginated response: { total, page, limit, totalPages, data: [...] }
-      // Legacy fallback: bare list or { data/details/items: [...] }
-      List<dynamic> responseItems = [];
-      int totalPages = 1;
-
-      if (jsonData is Map<String, dynamic>) {
-        totalPages = (jsonData['totalPages'] as num?)?.toInt() ?? 1;
-        final dynamic listData =
-            jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
-        if (listData is List) responseItems = listData;
-      } else if (jsonData is List) {
-        responseItems = jsonData;
-      }
-
-      final normalized = responseItems
-          .whereType<Map>()
-          .map<Map<String, dynamic>>((rawItem) {
-            final item = Map<String, dynamic>.from(rawItem);
-            return {
-              ...item,
-              'item_code': (item['item_code'] ?? '').toString(),
-              'item_name': (item['item_name'] ?? '').toString(),
-              'item_uom': (item['item_uom'] ?? '').toString(),
-              'item_qty': _asInt(item['item_qty']),
-              'item_price1': _asDouble(item['item_price1']),
-              'item_price2': _asDouble(item['item_price2']),
-              'item_price3': _asDouble(item['item_price3']),
-              'item_price4': _asDouble(item['item_price4']),
-              'item_price5': _asDouble(item['item_price5']),
-              'item_mrp': _asDouble(item['item_mrp']),
-              'item_tax': _asDouble(item['item_tax']),
-              'item_disc': _asDouble(item['item_disc']),
-              'item_cess': _asDouble(item['item_cess']),
-            };
-          })
-          .toList();
+      final normalized = parsed.data.map<Map<String, dynamic>>((item) {
+        return {
+          ...item,
+          'item_code': (item['item_code'] ?? '').toString(),
+          'item_name': (item['item_name'] ?? '').toString(),
+          'item_uom': (item['item_uom'] ?? '').toString(),
+          'item_qty': _asInt(item['item_qty']),
+          'item_price1': _asDouble(item['item_price1']),
+          'item_price2': _asDouble(item['item_price2']),
+          'item_price3': _asDouble(item['item_price3']),
+          'item_price4': _asDouble(item['item_price4']),
+          'item_price5': _asDouble(item['item_price5']),
+          'item_mrp': _asDouble(item['item_mrp']),
+          'item_tax': _asDouble(item['item_tax']),
+          'item_disc': _asDouble(item['item_disc']),
+          'item_cess': _asDouble(item['item_cess']),
+        };
+      }).toList();
 
       if (!mounted) return;
 
       setState(() {
         _page = page;
-        _hasMore = page < totalPages;
+        _hasMore = page < parsed.totalPages;
 
         if (page == 1) {
           _userDetails = normalized;

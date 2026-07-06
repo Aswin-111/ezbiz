@@ -6,6 +6,7 @@ import 'package:ezbiz/DetailWidgets/cart_item_card.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
 import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/models/shop_details_response.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -128,34 +129,17 @@ class _StockPageState extends State<StockPage> {
         return;
       }
 
-      final dynamic jsonData = json.decode(response.body);
-
-      List<dynamic> responseItems = [];
-      int totalPages = 1;
-
-      if (jsonData is Map<String, dynamic>) {
-        totalPages = (jsonData['totalPages'] as num?)?.toInt() ?? 1;
-        final dynamic listData =
-            jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
-        if (listData is List) responseItems = listData;
-      } else if (jsonData is List) {
-        responseItems = jsonData;
-      }
-
-      final normalized = responseItems
-          .whereType<Map>()
-          .map<Map<String, dynamic>>((raw) => Map<String, dynamic>.from(raw))
-          .toList();
+      final parsed = ShopDetailsResponse.fromJson(json.decode(response.body));
 
       if (!mounted) return;
 
       setState(() {
         _page = page;
-        _hasMore = page < totalPages;
+        _hasMore = page < parsed.totalPages;
         if (page == 1) {
-          _items = normalized;
+          _items = parsed.data;
         } else {
-          _items = [..._items, ...normalized];
+          _items = [..._items, ...parsed.data];
         }
         _filteredItems = List<Map<String, dynamic>>.from(_items);
       });

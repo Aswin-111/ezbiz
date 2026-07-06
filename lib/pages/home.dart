@@ -76,19 +76,6 @@ class _UserDataPageState extends State<UserDataPage>
     await _refreshAndFetchFirstPage();
   }
 
-  Future<Map<String, String>> _getAuthHeaders() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth_token');
-
-    if (token == null || token.isEmpty) {
-      throw Exception("Auth token missing");
-    }
-
-    return {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer $token",
-    };
-  }
 
   //   Future<void> _fetchData() async {
   //   try {
@@ -140,7 +127,7 @@ class _UserDataPageState extends State<UserDataPage>
     try {
       setState(() => _isPageLoading = true);
 
-      final headers = await _getAuthHeaders();
+      final headers = await authHeaders();
 
       final queryParams = <String, String>{
         'page': page.toString(),

@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/Consts/consts.dart';
@@ -46,25 +45,11 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
     );
   }
 
-  Future<Map<String, String>> _authHeaders() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth_token');
-
-    if (token == null || token.isEmpty) {
-      throw Exception("Auth token missing. Please login again.");
-    }
-
-    return {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer $token",
-    };
-  }
-
   Future<void> _saveOrderEdits() async {
     try {
       setState(() => _isSaving = true);
 
-      final headers = await _authHeaders();
+      final headers = await authHeaders();
 
       final customer = _orderData!["order"]["customer"];
 
@@ -117,7 +102,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
 
   Future<void> _deleteOrder() async {
     try {
-      final headers = await _authHeaders();
+      final headers = await authHeaders();
 
       final response = await http.delete(
         Uri.parse("$baseUrl/orders/${widget.ordNo}"),
@@ -233,7 +218,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
         _errorMessage = null;
       });
 
-      final headers = await _authHeaders();
+      final headers = await authHeaders();
       final uri = Uri.parse("$baseUrl/orders/${widget.ordNo}");
 
       final response = await http.get(uri, headers: headers);

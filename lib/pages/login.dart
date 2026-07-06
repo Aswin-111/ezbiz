@@ -1,15 +1,12 @@
-
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:ezbiz/Consts/consts.dart';
-import 'package:ezbiz/models/device_limit_error.dart';
-import 'package:ezbiz/models/session_info.dart';
+import 'package:ezbiz/helper/device_id.dart';
 import 'package:ezbiz/pages/welcome.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SignUpScreen extends StatefulWidget {
@@ -19,11 +16,19 @@ class SignUpScreen extends StatefulWidget {
   State<SignUpScreen> createState() => _SignUpScreenState();
 }
 
-class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderStateMixin {
+class _SignUpScreenState extends State<SignUpScreen>
+    with SingleTickerProviderStateMixin {
   final TextEditingController username = TextEditingController();
   final TextEditingController password = TextEditingController();
   bool _obscurePassword = true;
   bool _isLoading = false;
+
+  // Device ID reveal state — loaded async after first frame; controls the
+  // pre-login "Show my device ID" widget so a user can copy their ID and
+  // send it to their admin before ever attempting login.
+  String? _deviceId;
+  bool _deviceIdVisible = false;
+
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
@@ -47,6 +52,13 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
       curve: Curves.easeOutCubic,
     ));
     _animationController.forward();
+
+    // Prime the device ID so it's available both for the pre-login reveal
+    // and (via cache) synchronously during 403 handling.
+    DeviceId.get().then((id) {
+      if (!mounted) return;
+      setState(() => _deviceId = id);
+    });
   }
 
   @override
@@ -88,7 +100,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
             children: [
               // Animated background circles
               _buildBackgroundCircles(),
-              
+
               // Main content
               SafeArea(
                 child: Center(
@@ -126,7 +138,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                               ),
                             ),
                             SizedBox(height: 50.h),
-                            
+
                             // Welcome Text
                             Text(
                               'Welcome Back',
@@ -157,7 +169,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                               textAlign: TextAlign.center,
                             ),
                             SizedBox(height: 50.h),
-                            
+
                             // Login Card
                             Container(
                               padding: EdgeInsets.all(28.w),
@@ -181,7 +193,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                                     username,
                                   ),
                                   SizedBox(height: 20.h),
-                                  
+
                                   // Password Field
                                   _buildModernTextField(
                                     'Password',
@@ -203,7 +215,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                                     ),
                                   ),
                                   SizedBox(height: 16.h),
-                                  
+
                                   // Forgot Password
                                   Align(
                                     alignment: Alignment.centerRight,
@@ -222,7 +234,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                                     ),
                                   ),
                                   SizedBox(height: 24.h),
-                                  
+
                                   // Login Button
                                   Container(
                                     width: double.infinity,
@@ -237,33 +249,38 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                                       ),
                                       boxShadow: [
                                         BoxShadow(
-                                          color: Color(0xFF6C63FF).withOpacity(0.4),
+                                          color: Color(0xFF6C63FF)
+                                              .withOpacity(0.4),
                                           blurRadius: 20,
                                           offset: const Offset(0, 10),
                                         ),
                                       ],
                                     ),
                                     child: ElevatedButton(
-                                      onPressed: _isLoading ? null : _handleLogin,
+                                      onPressed:
+                                          _isLoading ? null : _handleLogin,
                                       style: ElevatedButton.styleFrom(
                                         backgroundColor: Colors.transparent,
                                         foregroundColor: Colors.white,
                                         shadowColor: Colors.transparent,
                                         shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(18.r),
+                                          borderRadius:
+                                              BorderRadius.circular(18.r),
                                         ),
                                       ),
                                       child: _isLoading
                                           ? SizedBox(
                                               height: 24.h,
                                               width: 24.w,
-                                              child: const CircularProgressIndicator(
+                                              child:
+                                                  const CircularProgressIndicator(
                                                 color: Colors.white,
                                                 strokeWidth: 2.5,
                                               ),
                                             )
                                           : Row(
-                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.center,
                                               children: [
                                                 Text(
                                                   'Login',
@@ -274,15 +291,22 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
                                                   ),
                                                 ),
                                                 SizedBox(width: 10.w),
-                                                Icon(Icons.arrow_forward_rounded, size: 22.sp),
+                                                Icon(
+                                                    Icons.arrow_forward_rounded,
+                                                    size: 22.sp),
                                               ],
                                             ),
                                     ),
                                   ),
+                                  SizedBox(height: 16.h),
+
+                                  // Pre-login device ID reveal — lets a
+                                  // first-time user see and copy their ID
+                                  // to send to an admin proactively.
+                                  _buildDeviceIdReveal(),
                                 ],
                               ),
                             ),
-                            
                           ],
                         ),
                       ),
@@ -293,6 +317,114 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDeviceIdReveal() {
+    if (_deviceIdVisible) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.devices_other,
+                  size: 16.sp, color: const Color(0xFF6C63FF)),
+              SizedBox(width: 6.w),
+              Text(
+                'Your device ID',
+                style: TextStyle(
+                  fontSize: 13.sp,
+                  color: Colors.grey[700],
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => setState(() => _deviceIdVisible = false),
+                child: Text(
+                  'Hide',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 12.sp,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Container(
+            padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 10.h),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8F9FE),
+              borderRadius: BorderRadius.circular(12.r),
+              border: Border.all(color: Colors.grey[200]!),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SelectableText(
+                    _deviceId ?? 'Loading…',
+                    style: TextStyle(
+                      fontSize: 12.sp,
+                      color: Colors.black87,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: _deviceId == null ? null : _copyDeviceId,
+                  icon: Icon(Icons.copy_rounded,
+                      size: 18.sp, color: const Color(0xFF6C63FF)),
+                  tooltip: 'Copy device ID',
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: 6.h),
+          Text(
+            'Share this ID with your admin to get your device approved.',
+            style: TextStyle(
+              fontSize: 11.sp,
+              color: Colors.grey[600],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Align(
+      alignment: Alignment.center,
+      child: TextButton.icon(
+        onPressed: () => setState(() => _deviceIdVisible = true),
+        icon: Icon(Icons.devices_other,
+            size: 16.sp, color: const Color(0xFF6C63FF)),
+        label: Text(
+          'Show my device ID',
+          style: TextStyle(
+            color: const Color(0xFF6C63FF),
+            fontSize: 13.sp,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _copyDeviceId() async {
+    final id = _deviceId;
+    if (id == null) return;
+    await Clipboard.setData(ClipboardData(text: id));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Device ID copied to clipboard'),
+        backgroundColor: const Color(0xFF4CAF50),
+        behavior: SnackBarBehavior.floating,
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.r)),
+        margin: const EdgeInsets.all(20),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -406,158 +538,15 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
     );
   }
 
-  String _formatRelative(DateTime? dt) {
-    if (dt == null) return '—';
-    final diff = DateTime.now().difference(dt.toLocal());
-    if (diff.inSeconds < 60) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
-    if (diff.inHours < 24) return '${diff.inHours} h ago';
-    if (diff.inDays < 7) return '${diff.inDays} d ago';
-    return DateFormat('yyyy-MM-dd').format(dt.toLocal());
-  }
-
-  Future<void> _showDeviceLimitDialog(DeviceLimitError err) async {
-    final message = err.message;
-    final limit = err.limit;
-    final sessions = err.activeSessions;
-
-    await showDialog<void>(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-        title: Row(
-          children: [
-            Icon(Icons.devices_other, color: Color(0xFF6C63FF)),
-            SizedBox(width: 8.w),
-            Expanded(
-              child: Text(
-                'Device Limit Reached',
-                style: TextStyle(
-                  fontSize: 18.sp,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(message, style: TextStyle(fontSize: 14.sp)),
-              if (limit != null) ...[
-                SizedBox(height: 8.h),
-                Text(
-                  'Limit: $limit devices',
-                  style: TextStyle(
-                    fontSize: 13.sp,
-                    color: Colors.grey[700],
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-              SizedBox(height: 14.h),
-              Text(
-                'Active sessions',
-                style: TextStyle(
-                  fontSize: 13.sp,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.black87,
-                ),
-              ),
-              SizedBox(height: 6.h),
-              if (sessions.isEmpty)
-                Text(
-                  'No session data returned.',
-                  style: TextStyle(fontSize: 13.sp, color: Colors.grey[600]),
-                )
-              else
-                Flexible(
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: sessions.length,
-                    separatorBuilder: (_, __) => Divider(height: 12.h),
-                    itemBuilder: (_, i) {
-                      final s = sessions[i];
-                      final label = s.deviceLabel;
-                      final lastActive = _formatRelative(s.lastActive);
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(Icons.smartphone,
-                              size: 18.sp, color: Color(0xFF6C63FF)),
-                          SizedBox(width: 8.w),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  label,
-                                  style: TextStyle(
-                                    fontSize: 13.sp,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                Text(
-                                  'Last active: $lastActive',
-                                  style: TextStyle(
-                                    fontSize: 11.sp,
-                                    color: Colors.grey[600],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-              SizedBox(height: 10.h),
-              Text(
-                'Please log out from another device and try again.',
-                style: TextStyle(
-                  fontSize: 12.sp,
-                  color: Colors.grey[700],
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogCtx),
-            child: Text(
-              'OK',
-              style: TextStyle(color: Color(0xFF6C63FF)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _deriveDeviceLabel() {
-    try {
-      return '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
-    } catch (_) {
-      return 'Unknown device';
-    }
-  }
-
   Future<void> _handleLogin() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      String userName = username.text;
-      String userPassword = password.text;
+      final userName = username.text;
+      final userPassword = password.text;
+      final deviceId = await DeviceId.get();
 
       final http.Response response = await createPost(
         '$baseUrl/login',
@@ -565,93 +554,51 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
         body: jsonEncode({
           "user_name": userName,
           "user_password": userPassword,
-          "device_label": _deriveDeviceLabel(),
+          "mac_address": deviceId,
         }),
       );
 
       if (!mounted) return;
+
       if (response.statusCode == 200) {
-  final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
 
-  final token = data['token'] as String?;
-  final user = data['user'] as Map<String, dynamic>?;
-  final session = data['session'] as Map<String, dynamic>?;
+        final token = data['token'] as String?;
+        final user = data['user'] as Map<String, dynamic>?;
 
-  if (token == null || user == null) {
-    throw Exception("Invalid login response: token/user missing");
-  }
+        if (token == null || user == null) {
+          throw Exception("Invalid login response: token/user missing");
+        }
 
-  final prefs = await SharedPreferences.getInstance();
+        final prefs = await SharedPreferences.getInstance();
 
-  // ✅ Save token
-  await prefs.setString('auth_token', token);
+        await prefs.setString('auth_token', token);
+        await prefs.setString(
+            'comp_code', user['comp_code']?.toString() ?? '');
+        await prefs.setString('user_id', user['user_id']?.toString() ?? '');
+        await prefs.setString('user_name', user['user_name']?.toString() ?? '');
+        await prefs.setString('user_type', user['user_type']?.toString() ?? '');
+        await prefs.setString('login_response', jsonEncode(data));
 
-  // ✅ Save session id (used for POST /logout and DELETE /my-sessions/:id)
-  final sessionId = session?['session_id']?.toString();
-  if (sessionId != null && sessionId.isNotEmpty) {
-    await AuthStorage.saveSessionId(sessionId);
-  }
-
-  // ✅ Save user fields (from nested user object)
-  await prefs.setString('comp_code', user['comp_code']?.toString() ?? '');
-  await prefs.setString('user_id', user['user_id']?.toString() ?? '');
-  await prefs.setString('user_name', user['user_name']?.toString() ?? '');
-  await prefs.setString('user_type', user['user_type']?.toString() ?? '');
-
-  // Optional: store full response too
-  await prefs.setString('login_response', jsonEncode(data));
-
-  if (!mounted) return;
-  Navigator.pushReplacement(
-    context,
-    MaterialPageRoute(builder: (context) => WelcomePage()),
-  );
-} else if (response.statusCode == 409) {
-        final err = DeviceLimitError.fromJson(
-          jsonDecode(response.body) as Map<String, dynamic>,
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => WelcomePage()),
         );
-        await _showDeviceLimitDialog(err);
-      }
+      } else if (response.statusCode == 403) {
+        // Device not on the whitelist. Show the server's message and the
+        // device ID the user needs to send their admin.
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final serverMessage = (data['message'] as String?) ??
+            'This device is not approved.';
+        // Trust the server's echoed mac_address if present, else fall back
+        // to the locally-known value.
+        final id = (data['mac_address'] as String?)?.trim().isNotEmpty == true
+            ? data['mac_address'].toString()
+            : deviceId;
 
-      // if (response.statusCode == 200) {
-      //   ScaffoldMessenger.of(context).showSnackBar(
-      //     SnackBar(
-      //       content: Row(
-      //         children: [
-      //           Icon(Icons.check_circle, color: Colors.white),
-      //           SizedBox(width: 12),
-      //           Text('Login successful!'),
-      //         ],
-      //       ),
-      //       backgroundColor: Color(0xFF4CAF50),
-      //       behavior: SnackBarBehavior.floating,
-      //       shape: RoundedRectangleBorder(
-      //         borderRadius: BorderRadius.circular(15.r),
-      //       ),
-      //       margin: EdgeInsets.all(20),
-      //     ),
-      //   );
-
-      //   print(response.body);
-
-      //   final user = jsonDecode(response.body);
-      //   final prefs = await SharedPreferences.getInstance();
-
-      //   await prefs.setString('comp_code', user['comp_code']);
-      //   await prefs.setString('user_id', user['user_id']);
-      //   await prefs.setString('user_name', user['user_name']);
-      //   await prefs.setString('user_type', user['user_type']);
-      //   await prefs.setString('user_data', jsonEncode(user));
-
-      //   final userData = await prefs.getString('user_data');
-      //   print(["done", userData]);
-
-      //   Navigator.pushReplacement(
-      //     context,
-      //     MaterialPageRoute(builder: (context) => WelcomePage()),
-      //   );
-      // } 
-      else {
+        await _showNotApprovedDialog(message: serverMessage, deviceId: id);
+      } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
@@ -671,7 +618,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
         );
       }
     } catch (e) {
-      print('Error: $e');
+      debugPrint('Login error: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -697,5 +644,119 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
         });
       }
     }
+  }
+
+  Future<void> _showNotApprovedDialog({
+    required String message,
+    required String deviceId,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: Row(
+          children: [
+            Icon(Icons.lock_outline, color: const Color(0xFF6C63FF)),
+            SizedBox(width: 8.w),
+            Expanded(
+              child: Text(
+                'Device not approved',
+                style: TextStyle(
+                  fontSize: 18.sp,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message, style: TextStyle(fontSize: 14.sp)),
+              SizedBox(height: 14.h),
+              Text(
+                'Your device ID',
+                style: TextStyle(
+                  fontSize: 12.sp,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
+                ),
+              ),
+              SizedBox(height: 6.h),
+              Container(
+                padding:
+                    EdgeInsets.symmetric(horizontal: 12.w, vertical: 10.h),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8F9FE),
+                  borderRadius: BorderRadius.circular(12.r),
+                  border: Border.all(color: Colors.grey[200]!),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        deviceId,
+                        style: TextStyle(
+                          fontSize: 12.sp,
+                          color: Colors.black87,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () async {
+                        await Clipboard.setData(
+                            ClipboardData(text: deviceId));
+                        if (!dialogCtx.mounted) return;
+                        ScaffoldMessenger.of(dialogCtx).showSnackBar(
+                          SnackBar(
+                            content: const Text(
+                                'Device ID copied to clipboard'),
+                            backgroundColor: const Color(0xFF4CAF50),
+                            behavior: SnackBarBehavior.floating,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12.r)),
+                            margin: const EdgeInsets.all(20),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      },
+                      icon: Icon(Icons.copy_rounded,
+                          size: 18.sp,
+                          color: const Color(0xFF6C63FF)),
+                      tooltip: 'Copy device ID',
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(height: 10.h),
+              Text(
+                'Send this ID to your admin. They must approve it before '
+                'you can log in.',
+                style: TextStyle(
+                  fontSize: 12.sp,
+                  color: Colors.grey[700],
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: Text(
+              'OK',
+              style: TextStyle(color: const Color(0xFF6C63FF)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

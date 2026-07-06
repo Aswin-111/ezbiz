@@ -3,7 +3,6 @@ import 'package:ezbiz/pages/order_detail.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/helper/responsive_page_size_mixin.dart';
@@ -136,21 +135,6 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     super.dispose();
   }
 
-  // -------- Auth --------
-  Future<Map<String, String>> _authHeaders() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth_token');
-
-    if (token == null || token.isEmpty) {
-      throw Exception("Auth token missing. Please login again.");
-    }
-
-    return {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer $token",
-    };
-  }
-
   // -------- Helpers --------
   String _fmt(DateTime d) {
     final mm = d.month.toString().padLeft(2, '0');
@@ -223,7 +207,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage>
     try {
       setState(() => _isPageLoading = true);
 
-      final headers = await _authHeaders();
+      final headers = await authHeaders();
       final uri = _buildUri(page: page);
 
       final res = await http.get(uri, headers: headers);

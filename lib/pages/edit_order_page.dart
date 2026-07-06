@@ -245,16 +245,6 @@ class _EditOrderPageState extends State<EditOrderPage>
     super.dispose();
   }
 
-  Future<Map<String, String>> authHeaders() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('auth_token');
-
-    return {
-      "Content-Type": "application/json",
-      if (token != null && token.isNotEmpty) "Authorization": "Bearer $token",
-    };
-  }
-
   // ==================== API CALLS ====================
 
   Future<void> _fetchPage({required int page}) async {

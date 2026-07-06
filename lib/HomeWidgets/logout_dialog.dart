@@ -1,10 +1,8 @@
 // lib/widgets/logout_dialog.dart
 import 'package:ezbiz/Consts/consts.dart';
-import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/pages/login.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:http/http.dart' as http;
 
 Future<void> showLogoutConfirmationDialog(BuildContext context) async {
   return showDialog<void>(
@@ -87,14 +85,7 @@ Future<void> showLogoutConfirmationDialog(BuildContext context) async {
                   ),
                   onPressed: () async {
                     Navigator.of(context).pop();
-                    try {
-                      final headers = await authHeaders();
-                      await http
-                          .post(Uri.parse('$baseUrl/logout'), headers: headers)
-                          .timeout(const Duration(seconds: 8));
-                    } catch (_) {
-                      // Ignore network/timeout errors — still clear locally.
-                    }
+                    // No backend session to revoke — purely local logout.
                     await AuthStorage.clearAll();
                     navigatorKey.currentState?.pushAndRemoveUntil(
                       MaterialPageRoute(

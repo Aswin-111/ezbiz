@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/DetailWidgets/cart_item_card.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
+import 'package:ezbiz/helper/helper.dart';
+import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shimmer/shimmer.dart';
 
 class StockPage extends StatefulWidget {
   final String compCode;
@@ -25,10 +28,18 @@ class StockPage extends StatefulWidget {
 class _StockPageState extends State<StockPage> {
   final _formKey = GlobalKey<FormState>();
   final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
+  Timer? _searchDebounce;
 
   List<Map<String, dynamic>> _items = [];
   List<Map<String, dynamic>> _filteredItems = [];
   final List<Map<String, dynamic>> _addedItems = [];
+
+  // Pagination state — _limit is computed from screen height after first frame
+  int _page = 1;
+  int _limit = 12; // fallback; overridden in initState post-frame callback
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
 
   bool _isLoading = true;
   bool _showShopDetails = true; // Stock page default shows shop items
@@ -36,12 +47,32 @@ class _StockPageState extends State<StockPage> {
   @override
   void initState() {
     super.initState();
-    _fetchStocks();
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >=
+          _scrollController.position.maxScrollExtent - 200) {
+        _fetchNextPage();
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // Card ~92 px tall + 12 px bottom margin = 104 px per row.
+      // Overhead: AppBar(56) + SearchBar(~60) + TotalBar(~60) + padding(~40) ≈ 216 px.
+      _limit = computePageLimit(
+        context,
+        cardHeight: 104,
+        overhead: 216,
+        min: 8,
+        max: 25,
+      );
+      _fetchPage(page: 1);
+    });
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 
@@ -57,54 +88,101 @@ class _StockPageState extends State<StockPage> {
 
   // ---------------- API ----------------
 
-  Future<void> _fetchStocks() async {
-    try {
-      setState(() => _isLoading = true);
+  Future<void> _fetchStocks() async => _fetchPage(page: 1);
 
+  Future<void> _fetchPage({required int page}) async {
+    if (!mounted) return;
+    if (page == 1) {
+      setState(() => _isLoading = true);
+    } else {
+      if (_isLoadingMore || !_hasMore) return;
+      setState(() => _isLoadingMore = true);
+    }
+
+    try {
       final headers = await _authHeaders();
+
+      final body = <String, dynamic>{
+        'comp_code': widget.compCode,
+        'page': page,
+        'limit': _limit,
+      };
+      final searchTerm = _searchController.text.trim();
+      if (searchTerm.isNotEmpty) body['search'] = searchTerm;
+
       final response = await http.post(
         Uri.parse('$baseUrl/shopdetails'),
         headers: headers,
-        body: jsonEncode({
-          // If backend needs comp_code, send it:
-          // "comp_code": widget.compCode,
-        }),
+        body: jsonEncode(body),
       );
 
-      if (response.statusCode == 200) {
-        final jsonData = json.decode(response.body);
-
-        final List<Map<String, dynamic>> list = jsonData is List
-            ? List<Map<String, dynamic>>.from(jsonData)
-            : List<Map<String, dynamic>>.from(jsonData['details'] ?? []);
-
-        setState(() {
-          _items = list;
-          _filteredItems = List.from(_items);
-          _isLoading = false;
-        });
-      } else if (response.statusCode == 401) {
-        _showErrorSnackBar("Session expired. Please login again.");
-      } else {
-        _showErrorSnackBar("Failed to load stock. Status: ${response.statusCode}");
+      if (response.statusCode == 401) {
+        clearAuthAndNavigateToLogin();
+        return;
       }
+
+      if (response.statusCode != 200) {
+        _showErrorSnackBar(
+          "Failed to load stock. Status: ${response.statusCode}",
+        );
+        return;
+      }
+
+      final dynamic jsonData = json.decode(response.body);
+
+      List<dynamic> responseItems = [];
+      int totalPages = 1;
+
+      if (jsonData is Map<String, dynamic>) {
+        totalPages = (jsonData['totalPages'] as num?)?.toInt() ?? 1;
+        final dynamic listData =
+            jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
+        if (listData is List) responseItems = listData;
+      } else if (jsonData is List) {
+        responseItems = jsonData;
+      }
+
+      final normalized = responseItems
+          .whereType<Map>()
+          .map<Map<String, dynamic>>((raw) => Map<String, dynamic>.from(raw))
+          .toList();
+
+      if (!mounted) return;
+
+      setState(() {
+        _page = page;
+        _hasMore = page < totalPages;
+        if (page == 1) {
+          _items = normalized;
+        } else {
+          _items = [..._items, ...normalized];
+        }
+        _filteredItems = List<Map<String, dynamic>>.from(_items);
+      });
     } catch (e) {
-      _showErrorSnackBar("Error fetching stock: $e");
+      if (mounted) _showErrorSnackBar("Error fetching stock: $e");
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+        });
+      }
     }
   }
 
-  // ---------------- Helpers (same logic as your UserDetailsPage) ----------------
+  Future<void> _fetchNextPage() async {
+    if (!_hasMore || _isLoadingMore || _isLoading) return;
+    await _fetchPage(page: _page + 1);
+  }
+
+  // ---------------- Helpers ----------------
 
   void _filterSearchResults(String query) {
-    setState(() {
-      _filteredItems = query.isEmpty
-          ? List.from(_items)
-          : _items.where((item) {
-              final name = (item['item_name'] ?? '').toString().toLowerCase();
-              return name.contains(query.toLowerCase());
-            }).toList();
+    setState(() {}); // reflect suffix icon change immediately
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      _fetchPage(page: 1);
     });
   }
 
@@ -173,46 +251,6 @@ class _StockPageState extends State<StockPage> {
 
   // ---------------- UI ----------------
 
-  Widget _buildShimmerLoading() {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Shimmer.fromColors(
-            baseColor: Colors.grey.shade300,
-            highlightColor: Colors.grey.shade100,
-            child: Container(
-              height: 48,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
-        ),
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: 6,
-            itemBuilder: (context, index) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Shimmer.fromColors(
-                baseColor: Colors.grey.shade300,
-                highlightColor: Colors.grey.shade100,
-                child: Container(
-                  height: 90,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 
   Widget _subtotalBar() {
     final subtotal = _calculateSubtotal();
@@ -261,9 +299,10 @@ class _StockPageState extends State<StockPage> {
               : IconButton(
                   icon: const Icon(Icons.clear),
                   onPressed: () {
+                    _searchDebounce?.cancel();
                     _searchController.clear();
-                    _filterSearchResults('');
                     setState(() {});
+                    _fetchPage(page: 1);
                   },
                 ),
           filled: true,
@@ -291,25 +330,29 @@ class _StockPageState extends State<StockPage> {
       );
     }
 
+    final itemCount = _filteredItems.length + (_isLoadingMore ? 1 : 0);
+
     return ListView.builder(
+      controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: _filteredItems.length,
+      itemCount: itemCount,
       itemBuilder: (context, index) {
+        if (index >= _filteredItems.length) {
+          return const PageLoadingIndicator();
+        }
         final item = _filteredItems[index];
         final rate = _getItemRate(item);
         final uom = (item['item_uom'] ?? '').toString();
         final stock = item['item_qty'] ?? 0;
 
-    return ShopItemCard(
-  item: item,
-  rate: rate,
-  stock: stock,
-  uom: uom,
-  onAdd: () {},              // required, but unused
-  showAddButton: false,      // ✅ hides plus ONLY here
-);
-
-
+        return ShopItemCard(
+          item: item,
+          rate: rate,
+          stock: stock,
+          uom: uom,
+          onAdd: () {},
+          showAddButton: false,
+        );
       },
     );
   }
@@ -744,15 +787,13 @@ Widget _totalBar() {
           ),
         ],
       ),
-     body: _isLoading
-    ? _buildShimmerLoading()
-    : Column(
+      body: Column(
         children: [
           const SizedBox(height: 12),
           _searchBar(),
           const SizedBox(height: 12),
-          Expanded(child: _buildItemList()),
-          _totalBar(), // ✅ always show total of visible list
+          Expanded(child: _isLoading ? const ListLoading() : _buildItemList()),
+          _totalBar(),
         ],
       ),
 

@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/HomeWidgets/area_dropdown.dart';
 import 'package:ezbiz/HomeWidgets/user_header.dart';
-import 'package:ezbiz/HomeWidgets/area_filter_pills.dart';
 import 'package:ezbiz/HomeWidgets/customer_list.dart';
 import 'package:ezbiz/HomeWidgets/app_drawer.dart';
 import 'package:ezbiz/HomeWidgets/logout_dialog.dart';
@@ -11,7 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shimmer/shimmer.dart';
+import 'package:ezbiz/helper/helper.dart';
+import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/widgets/list_loading.dart';
 import 'dart:async';
 class UserDataPage extends StatefulWidget {
   @override
@@ -24,13 +25,15 @@ class _UserDataPageState extends State<UserDataPage> {
   List<String> _allAreas = [];
   String? _selectedArea = "All";
   String _searchName = '';
-  bool _isLoading = true;
   String? _compCode;
   int _page = 1;
-  final int _limit = 10;
-  bool _isInitialLoading = true; // first load shimmer
-  bool _isPageLoading = false; // bottom loader for next pages
-  bool _hasMore = true; // stop when no more data
+  // Responsive page size: computed from screen height after first frame.
+  // Card ~105 px (90 px card + 15 px margin). Overhead: SafeArea(~24)
+  // + UserHeader(~160) + AreaDropdown(~70) + "All Customers" row(~56) ≈ 310 px.
+  int _limit = 10; // fallback; overridden in initState post-frame callback
+  bool _isInitialLoading = true;
+  bool _isPageLoading = false;
+  bool _hasMore = true;
   Timer? _searchDebounce;
   String _norm(dynamic v) => (v ?? '').toString().trim().toLowerCase();
 
@@ -39,90 +42,17 @@ class _UserDataPageState extends State<UserDataPage> {
   @override
   void initState() {
     super.initState();
-    _loadCompCodeAndFetchData();
-  }
-
-  Widget _buildShimmerLoading() {
-    return Column(
-      children: [
-        // Optional top padding to mimic header spacing
-        SizedBox(height: 20.h),
-        // Shimmer list
-        Expanded(
-          child: ListView.builder(
-            padding: EdgeInsets.symmetric(horizontal: 20.w),
-            itemCount: 6, // number of skeleton items
-            itemBuilder: (context, index) {
-              return Padding(
-                padding: EdgeInsets.only(bottom: 15.h),
-                child: Shimmer.fromColors(
-                  baseColor: Colors.grey.shade300,
-                  highlightColor: Colors.grey.shade100,
-                  child: Container(
-                    height: 90.h,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      children: [
-                        // Avatar skeleton
-                        Padding(
-                          padding: EdgeInsets.all(16.w),
-                          child: Container(
-                            width: 60.w,
-                            height: 60.w,
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade300,
-                              borderRadius: BorderRadius.circular(18),
-                            ),
-                          ),
-                        ),
-                        // Text skeletons
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                width: 140.w,
-                                height: 12.h,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              SizedBox(height: 8.h),
-                              Container(
-                                width: 200.w,
-                                height: 10.h,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              SizedBox(height: 6.h),
-                              Container(
-                                width: 120.w,
-                                height: 10.h,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _limit = computePageLimit(
+        context,
+        cardHeight: 105,
+        overhead: 310,
+        min: 8,
+        max: 25,
+      );
+      _loadCompCodeAndFetchData();
+    });
   }
 
   Future<void> _loadCompCodeAndFetchData() async {
@@ -266,7 +196,8 @@ class _UserDataPageState extends State<UserDataPage> {
           }
         });
       } else if (response.statusCode == 401) {
-        throw Exception("Unauthorized (token expired/invalid)");
+        clearAuthAndNavigateToLogin();
+        return;
       } else if (response.statusCode == 404) {
         if (page == 1) {
           setState(() {
@@ -313,59 +244,38 @@ class _UserDataPageState extends State<UserDataPage> {
             },
           ),
 
-          body:
-              _isInitialLoading
-                  ? _buildShimmerLoading()
-                  : Column(
+          // UserHeader (search) and chrome are always in the tree so the
+          // keyboard cursor is never dropped when a refresh begins.
+          body: Column(
                     children: [
                       UserHeader(
                         searchText: _searchName,
                         onSearchChanged: (value) {
-    setState(() => _searchName = value);
-
-    // 👇 Replace your existing onSearchChanged body with this
-    _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
-      _refreshAndFetchFirstPage();
-    });
-  },
-                       onClearSearch: () {
-    _searchDebounce?.cancel(); // 👈 cancel any pending debounce
-    setState(() => _searchName = '');
-    _refreshAndFetchFirstPage(); // 👈 reload unfiltered
-  },
+                          setState(() => _searchName = value);
+                          _searchDebounce?.cancel();
+                          _searchDebounce = Timer(
+                            const Duration(milliseconds: 400),
+                            _refreshAndFetchFirstPage,
+                          );
+                        },
+                        onClearSearch: () {
+                          _searchDebounce?.cancel();
+                          setState(() => _searchName = '');
+                          _refreshAndFetchFirstPage();
+                        },
                         onLogoutPressed:
                             () => showLogoutConfirmationDialog(context),
                       ),
-                      // Container(
-                      //   margin: EdgeInsets.only(top: 20.h),
-                      //   height: 50.h,
-                      //   child: AreaFilterPills(
-                      //     areas: _areas,
-                      //     selectedArea: _selectedArea,
-                      //     onAreaSelected: (area) {
-                      //       setState(() {
-                      //         _selectedArea = area;
-                      //       });
-                      //     },
-                      //   ),
-                      // ),
                       SizedBox(height: 16.h),
-
                       AreaSearchDropdown(
                         areas: _areas,
                         selectedArea: _selectedArea ?? "All",
                         onChanged: (area) async {
-                          setState(() {
-                            _selectedArea = area;
-                          });
-
+                          setState(() => _selectedArea = area);
                           await _refreshAndFetchFirstPage();
                         },
                       ),
-
                       SizedBox(height: 10.h),
-
                       Padding(
                         padding: EdgeInsets.symmetric(
                           horizontal: 20.w,
@@ -388,14 +298,14 @@ class _UserDataPageState extends State<UserDataPage> {
                                 vertical: 6.h,
                               ),
                               decoration: BoxDecoration(
-                                color: Color(0xFFEEEDFF),
+                                color: const Color(0xFFEEEDFF),
                                 borderRadius: BorderRadius.circular(20),
                               ),
                               child: Text(
                                 '$_filteredResultsCount Results',
                                 style: TextStyle(
                                   fontSize: 13.sp,
-                                  color: Color(0xFF6C63FF),
+                                  color: const Color(0xFF6C63FF),
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -403,45 +313,38 @@ class _UserDataPageState extends State<UserDataPage> {
                           ],
                         ),
                       ),
+                      // Only the list area reacts to loading state.
                       Expanded(
-                        child: Stack(
-                          children: [
-                            NotificationListener<ScrollNotification>(
-                              onNotification: (notification) {
-                                // Trigger when near bottom
-                                if (notification.metrics.pixels >=
-                                    notification.metrics.maxScrollExtent -
-                                        200) {
-                                  _fetchNextPage();
-                                }
-                                return false;
-                              },
-                              child: CustomerList(
-                               users: _users,   // ✅ already filtered
-                                searchName:
-                                    '', // ✅ prevent double filtering inside CustomerList
-                                selectedArea:
-                                    'All', // ✅ prevent double filtering inside CustomerList
-                              ),
-                            ),
-
-                            // Bottom loader for next page
-                            if (_isPageLoading && !_isInitialLoading)
-                              Align(
-                                alignment: Alignment.bottomCenter,
-                                child: Padding(
-                                  padding: const EdgeInsets.only(bottom: 16),
-                                  child: SizedBox(
-                                    height: 24,
-                                    width: 24,
-                                    child: const CircularProgressIndicator(
-                                      strokeWidth: 2,
+                        child: _isInitialLoading
+                            ? const ListLoading()
+                            : Stack(
+                                children: [
+                                  NotificationListener<ScrollNotification>(
+                                    onNotification: (notification) {
+                                      if (notification.metrics.pixels >=
+                                          notification
+                                                  .metrics.maxScrollExtent -
+                                              200) {
+                                        _fetchNextPage();
+                                      }
+                                      return false;
+                                    },
+                                    child: CustomerList(
+                                      users: _users,
+                                      searchName: '',
+                                      selectedArea: 'All',
                                     ),
                                   ),
-                                ),
+                                  if (_isPageLoading)
+                                    const Align(
+                                      alignment: Alignment.bottomCenter,
+                                      child: Padding(
+                                        padding: EdgeInsets.only(bottom: 16),
+                                        child: PageLoadingIndicator(),
+                                      ),
+                                    ),
+                                ],
                               ),
-                          ],
-                        ),
                       ),
                     ],
                   ),

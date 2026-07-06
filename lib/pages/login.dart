@@ -1,11 +1,13 @@
 
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:ezbiz/Consts/consts.dart';
-import 'package:ezbiz/pages/home.dart';
 import 'package:ezbiz/pages/welcome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SignUpScreen extends StatefulWidget {
@@ -402,6 +404,161 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
     );
   }
 
+  String _formatRelative(String? iso) {
+    if (iso == null || iso.isEmpty) return '—';
+    final dt = DateTime.tryParse(iso);
+    if (dt == null) return iso;
+    final diff = DateTime.now().difference(dt.toLocal());
+    if (diff.inSeconds < 60) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24) return '${diff.inHours} h ago';
+    if (diff.inDays < 7) return '${diff.inDays} d ago';
+    return DateFormat('yyyy-MM-dd').format(dt.toLocal());
+  }
+
+  Future<void> _showDeviceLimitDialog(Map<String, dynamic> data) async {
+    final message =
+        (data['message'] as String?) ?? 'Device login limit reached.';
+    final limit = (data['limit'] as num?)?.toInt();
+    final sessions =
+        (data['active_sessions'] as List?)?.cast<Map<String, dynamic>>() ??
+            const <Map<String, dynamic>>[];
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        title: Row(
+          children: [
+            Icon(Icons.devices_other, color: Color(0xFF6C63FF)),
+            SizedBox(width: 8.w),
+            Expanded(
+              child: Text(
+                'Device Limit Reached',
+                style: TextStyle(
+                  fontSize: 18.sp,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message, style: TextStyle(fontSize: 14.sp)),
+              if (limit != null) ...[
+                SizedBox(height: 8.h),
+                Text(
+                  'Limit: $limit devices',
+                  style: TextStyle(
+                    fontSize: 13.sp,
+                    color: Colors.grey[700],
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              SizedBox(height: 14.h),
+              Text(
+                'Active sessions',
+                style: TextStyle(
+                  fontSize: 13.sp,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
+                ),
+              ),
+              SizedBox(height: 6.h),
+              if (sessions.isEmpty)
+                Text(
+                  'No session data returned.',
+                  style: TextStyle(fontSize: 13.sp, color: Colors.grey[600]),
+                )
+              else
+                Flexible(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: sessions.length,
+                    separatorBuilder: (_, __) => Divider(height: 12.h),
+                    itemBuilder: (_, i) {
+                      final s = sessions[i];
+                      final label =
+                          (s['device_label']?.toString().trim().isNotEmpty ??
+                                  false)
+                              ? s['device_label'].toString()
+                              : 'Unknown device';
+                      final lastActive = _formatRelative(
+                        s['last_active']?.toString(),
+                      );
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.smartphone,
+                              size: 18.sp, color: Color(0xFF6C63FF)),
+                          SizedBox(width: 8.w),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  label,
+                                  style: TextStyle(
+                                    fontSize: 13.sp,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  'Last active: $lastActive',
+                                  style: TextStyle(
+                                    fontSize: 11.sp,
+                                    color: Colors.grey[600],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              SizedBox(height: 10.h),
+              Text(
+                'Please log out from another device and try again.',
+                style: TextStyle(
+                  fontSize: 12.sp,
+                  color: Colors.grey[700],
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: Text(
+              'OK',
+              style: TextStyle(color: Color(0xFF6C63FF)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _deriveDeviceLabel() {
+    try {
+      return '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+    } catch (_) {
+      return 'Unknown device';
+    }
+  }
+
   Future<void> _handleLogin() async {
     setState(() {
       _isLoading = true;
@@ -417,6 +574,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
         body: jsonEncode({
           "user_name": userName,
           "user_password": userPassword,
+          "device_label": _deriveDeviceLabel(),
         }),
       );
 
@@ -426,6 +584,7 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
 
   final token = data['token'] as String?;
   final user = data['user'] as Map<String, dynamic>?;
+  final session = data['session'] as Map<String, dynamic>?;
 
   if (token == null || user == null) {
     throw Exception("Invalid login response: token/user missing");
@@ -436,6 +595,12 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
   // ✅ Save token
   await prefs.setString('auth_token', token);
 
+  // ✅ Save session id (used for POST /logout and DELETE /my-sessions/:id)
+  final sessionId = session?['session_id']?.toString();
+  if (sessionId != null && sessionId.isNotEmpty) {
+    await AuthStorage.saveSessionId(sessionId);
+  }
+
   // ✅ Save user fields (from nested user object)
   await prefs.setString('comp_code', user['comp_code']?.toString() ?? '');
   await prefs.setString('user_id', user['user_id']?.toString() ?? '');
@@ -445,12 +610,15 @@ class _SignUpScreenState extends State<SignUpScreen> with SingleTickerProviderSt
   // Optional: store full response too
   await prefs.setString('login_response', jsonEncode(data));
 
-  // Continue navigation
+  if (!mounted) return;
   Navigator.pushReplacement(
     context,
     MaterialPageRoute(builder: (context) => WelcomePage()),
   );
-} 
+} else if (response.statusCode == 409) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        await _showDeviceLimitDialog(data);
+      }
 
       // if (response.statusCode == 200) {
       //   ScaffoldMessenger.of(context).showSnackBar(

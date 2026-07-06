@@ -1,22 +1,22 @@
 // lib/pages/user_details_page.dart
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/DetailWidgets/cart_item_card.dart';
 import 'package:ezbiz/DetailWidgets/checkout_bar.dart';
 import 'package:ezbiz/DetailWidgets/customer_info_card.dart';
 import 'package:ezbiz/DetailWidgets/item_searchbar.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
+import 'package:ezbiz/helper/helper.dart';
+import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
-
-import 'package:shared_preferences/shared_preferences.dart';
-
-import 'package:ezbiz/Consts/consts.dart';
-
-import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class EditOrderPage extends StatefulWidget {
   final int ordNo;
@@ -35,10 +35,18 @@ class EditOrderPage extends StatefulWidget {
 class _EditOrderPageState extends State<EditOrderPage> {
   final _formKey = GlobalKey<FormState>();
   final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
+  Timer? _searchDebounce;
 
   List<Map<String, dynamic>> _userDetails = [];
   List<Map<String, dynamic>> _filteredDetails = [];
   final List<Map<String, dynamic>> _addedItems = [];
+
+  // Pagination state — _limit is computed from screen height after first frame
+  int _page = 1;
+  int _limit = 12;
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
 
   bool _isLoading = true;
   bool _showShopDetails = false;
@@ -194,14 +202,36 @@ class _EditOrderPageState extends State<EditOrderPage> {
 
     _addedItems.addAll(items.cast<Map<String, dynamic>>());
 
-    _fetchUserDetails();
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >=
+          _scrollController.position.maxScrollExtent - 200) {
+        _fetchNextPage();
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // Card ~92 px tall + 12 px bottom margin = 104 px per row.
+      // Overhead: AppBar(56) + CustomerInfoCard(~100) + SearchBar(~60)
+      //           + padding(~40) ≈ 256 px.
+      _limit = computePageLimit(
+        context,
+        cardHeight: 104,
+        overhead: 256,
+        min: 8,
+        max: 25,
+      );
+      _fetchPage(page: 1);
+    });
+
     debugPrint("EDIT ORDER DATA: ${jsonEncode(widget.orderData)}");
   }
 
   @override
   void dispose() {
     _searchController.dispose();
-
+    _scrollController.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 
@@ -217,52 +247,102 @@ class _EditOrderPageState extends State<EditOrderPage> {
 
   // ==================== API CALLS ====================
 
-  Future<void> _fetchUserDetails() async {
+  Future<void> _fetchPage({required int page}) async {
+    if (!mounted) return;
+    if (page == 1) {
+      setState(() => _isLoading = true);
+    } else {
+      if (_isLoadingMore || !_hasMore) return;
+      setState(() => _isLoadingMore = true);
+    }
+
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final compCode = prefs.getString('comp_code') ?? '';
       final headers = await authHeaders();
+
+      final body = <String, dynamic>{
+        'comp_code': compCode,
+        'page': page,
+        'limit': _limit,
+      };
+      final searchTerm = _searchController.text.trim();
+      if (searchTerm.isNotEmpty) body['search'] = searchTerm;
+
       final response = await http.post(
         Uri.parse('$baseUrl/shopdetails'),
         headers: headers,
-        body: jsonEncode({}),
+        body: jsonEncode(body),
       );
 
-      if (response.statusCode == 200) {
-        final jsonData = json.decode(response.body);
-        print("Fetch user details : $jsonData");
+      if (response.statusCode == 401) {
+        clearAuthAndNavigateToLogin();
+        return;
+      }
 
-        final rawList =
-            jsonData is List
-                ? List<Map<String, dynamic>>.from(jsonData)
-                : List<Map<String, dynamic>>.from(jsonData['details'] ?? []);
-
-        final normalized =
-            rawList
-                .map(
-                  (item) => {
-                    ...item,
-                    'item_qty': _asInt(item['item_qty']),
-                    'item_price1': _asDouble(item['item_price1']),
-                    'item_price2': _asDouble(item['item_price2']),
-                    'item_mrp': _asDouble(item['item_mrp']),
-                    'item_tax': _asDouble(item['item_tax']),
-                    'item_disc': _asDouble(item['item_disc']),
-                  },
-                )
-                .toList();
-
-        setState(() {
-          _userDetails = normalized;
-          _filteredDetails = List.from(normalized);
-          _isLoading = false;
-        });
-      } else {
+      if (response.statusCode != 200) {
         _showErrorSnackBar(
           "Failed to fetch details. Status: ${response.statusCode}",
         );
+        return;
       }
+
+      final dynamic jsonData = json.decode(response.body);
+
+      List<dynamic> responseItems = [];
+      int totalPages = 1;
+
+      if (jsonData is Map<String, dynamic>) {
+        totalPages = (jsonData['totalPages'] as num?)?.toInt() ?? 1;
+        final dynamic listData =
+            jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
+        if (listData is List) responseItems = listData;
+      } else if (jsonData is List) {
+        responseItems = jsonData;
+      }
+
+      final normalized = responseItems
+          .whereType<Map>()
+          .map<Map<String, dynamic>>((raw) {
+        final item = Map<String, dynamic>.from(raw);
+        return {
+          ...item,
+          'item_qty': _asInt(item['item_qty']),
+          'item_price1': _asDouble(item['item_price1']),
+          'item_price2': _asDouble(item['item_price2']),
+          'item_mrp': _asDouble(item['item_mrp']),
+          'item_tax': _asDouble(item['item_tax']),
+          'item_disc': _asDouble(item['item_disc']),
+        };
+      }).toList();
+
+      if (!mounted) return;
+
+      setState(() {
+        _page = page;
+        _hasMore = page < totalPages;
+        if (page == 1) {
+          _userDetails = normalized;
+        } else {
+          _userDetails = [..._userDetails, ...normalized];
+        }
+        _filteredDetails = List<Map<String, dynamic>>.from(_userDetails);
+      });
     } catch (e) {
-      _showErrorSnackBar("Error fetching data: $e");
+      if (mounted) _showErrorSnackBar("Error fetching data: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+        });
+      }
     }
+  }
+
+  Future<void> _fetchNextPage() async {
+    if (!_hasMore || _isLoadingMore || _isLoading) return;
+    await _fetchPage(page: _page + 1);
   }
 
   // ==================== HELPER METHODS ====================
@@ -278,14 +358,9 @@ class _EditOrderPageState extends State<EditOrderPage> {
   }
 
   void _filterSearchResults(String query) {
-    setState(() {
-      _filteredDetails =
-          query.isEmpty
-              ? List.from(_userDetails)
-              : _userDetails.where((item) {
-                final name = (item['item_name'] ?? '').toString().toLowerCase();
-                return name.contains(query.toLowerCase());
-              }).toList();
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      _fetchPage(page: 1);
     });
   }
 
@@ -572,123 +647,7 @@ class _EditOrderPageState extends State<EditOrderPage> {
     );
   }
 
-  Widget _buildShimmerLoading() {
-    return Column(
-      children: [
-        // Customer info card skeleton
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Shimmer.fromColors(
-            baseColor: Colors.grey.shade300,
-            highlightColor: Colors.grey.shade100,
-            child: Container(
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
-        ),
-
-        // Search bar skeleton
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Shimmer.fromColors(
-            baseColor: Colors.grey.shade300,
-            highlightColor: Colors.grey.shade100,
-            child: Container(
-              height: 48,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        // List skeleton (items)
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: 6,
-            itemBuilder: (context, index) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Shimmer.fromColors(
-                  baseColor: Colors.grey.shade300,
-                  highlightColor: Colors.grey.shade100,
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      children: [
-                        // Left icon block
-                        Container(
-                          width: 50,
-                          height: 50,
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade300,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        // Text lines
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                width: 160,
-                                height: 12,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Container(
-                                width: 200,
-                                height: 10,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Container(
-                                width: 120,
-                                height: 10,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildBody() {
-    if (_isLoading) {
-      return _buildShimmerLoading();
-    }
-
     return Column(
       children: [
         CustomerInfoCard(
@@ -712,10 +671,12 @@ class _EditOrderPageState extends State<EditOrderPage> {
         ],
 
         Expanded(
-          child: _showShopDetails ? _buildShopDetailsView() : _buildCartView(),
+          child: _isLoading
+              ? const ListLoading()
+              : _showShopDetails ? _buildShopDetailsView() : _buildCartView(),
         ),
 
-        if (!_showShopDetails && _addedItems.isNotEmpty)
+        if (!_isLoading && !_showShopDetails && _addedItems.isNotEmpty)
           CheckoutBar(
             total: _calculateTotal(),
             title: 'Save Order',
@@ -771,15 +732,20 @@ class _EditOrderPageState extends State<EditOrderPage> {
       );
     }
 
+    final itemCount = _filteredDetails.length + (_isLoadingMore ? 1 : 0);
+
     return ListView.builder(
+      controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: _filteredDetails.length,
+      itemCount: itemCount,
       itemBuilder: (context, index) {
+        if (index >= _filteredDetails.length) {
+          return const PageLoadingIndicator();
+        }
         final item = _filteredDetails[index];
         final rate = _getItemRate(item);
         final uom = (item['item_uom'] ?? '').toString();
 
-        // ✅ force numeric type safely
         final int stock = _asInt(item['item_qty']);
 
         return ShopItemCard(

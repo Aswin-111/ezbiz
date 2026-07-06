@@ -1,10 +1,9 @@
-import 'package:ezbiz/pages/home.dart';
+import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/pages/login.dart';
 import 'package:ezbiz/pages/welcome.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-//import 'package:easybizapp/pages/dashboard.dart'; // Remove unused import
 
 
 void main() async {
@@ -31,6 +30,7 @@ class MyApp extends StatelessWidget {
     return ScreenUtilInit(
         designSize: Size(375, 812),
         child: MaterialApp(
+            navigatorKey: navigatorKey,
             debugShowCheckedModeBanner: false,
             title: 'Sign Up',
             theme: ThemeData(

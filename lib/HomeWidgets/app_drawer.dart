@@ -2,6 +2,7 @@
 
 // lib/widgets/app_drawer.dart
 import 'package:ezbiz/pages/create_cus.dart';
+import 'package:ezbiz/pages/my_devices_page.dart';
 import 'package:ezbiz/pages/order_history.dart';
 import 'package:ezbiz/pages/stock.dart';
 import 'package:flutter/material.dart';
@@ -170,6 +171,22 @@ class AppDrawer extends StatelessWidget {
     );
   },
 ),
+
+                Divider(height: 1, thickness: 1, color: Colors.grey[200]),
+                _buildDrawerItem(
+                  icon: Icons.devices_rounded,
+                  title: 'My Devices',
+                  subtitle: 'Manage active sessions',
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const MyDevicesPage(),
+                      ),
+                    );
+                  },
+                ),
 
                 // _buildDrawerItem(
                 //   icon: Icons.inventory_rounded,

@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shimmer/shimmer.dart';
+import 'package:ezbiz/widgets/list_loading.dart';
+import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/pages/edit_order_page.dart';
 
@@ -247,10 +248,8 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
           _isLoading = false;
         });
       } else if (response.statusCode == 401) {
-        setState(() {
-          _errorMessage = "Session expired. Please login again.";
-          _isLoading = false;
-        });
+        clearAuthAndNavigateToLogin();
+        return;
       } else {
         setState(() {
           _errorMessage = "Failed to load order details";
@@ -277,30 +276,6 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
     if (status.toUpperCase() == "BILLED" || status == "Y") return "Billed";
     if (status.toUpperCase() == "PENDING" || status == "N") return "Pending";
     return status;
-  }
-
-  Widget _buildShimmerLoading() {
-    return SingleChildScrollView(
-      padding: EdgeInsets.all(20.w),
-      child: Column(
-        children: List.generate(5, (index) {
-          return Padding(
-            padding: EdgeInsets.only(bottom: 15.h),
-            child: Shimmer.fromColors(
-              baseColor: Colors.grey.shade300,
-              highlightColor: Colors.grey.shade100,
-              child: Container(
-                height: 100.h,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-              ),
-            ),
-          );
-        }),
-      ),
-    );
   }
 
   Widget _buildErrorState() {
@@ -674,7 +649,7 @@ class _OrderDetailPageState extends State<OrderDetailPage> {
         body: Stack(
           children: [
             _isLoading
-                ? _buildShimmerLoading()
+                ? const ListLoading()
                 : _errorMessage != null
                 ? _buildErrorState()
                 : RefreshIndicator(

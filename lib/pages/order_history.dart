@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shimmer/shimmer.dart';
+import 'package:ezbiz/widgets/list_loading.dart';
+import 'package:ezbiz/helper/helper.dart';
+import 'package:ezbiz/helper/page_limit.dart';
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:intl/intl.dart';
 
@@ -26,7 +28,7 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
 
   // Pagination
   int _page = 1;
-  final int _limit = 10;
+  int _limit = 10;
   int _total = 0;
   int _totalPages = 1;
   bool _hasMore = true;
@@ -102,7 +104,17 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
       }
     });
 
-    _refresh();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _limit = computePageLimit(
+        context,
+        cardHeight: 135,
+        overhead: 240,
+        min: 5,
+        max: 20,
+      );
+      _refresh();
+    });
   }
 
   @override
@@ -230,7 +242,8 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
           _hasMore = _page < _totalPages;
         });
       } else if (res.statusCode == 401) {
-        _showSnack("Session expired. Please login again.");
+        clearAuthAndNavigateToLogin();
+        return;
       } else {
         _showSnack("Failed: ${res.statusCode} - ${res.body}");
       }
@@ -314,30 +327,6 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
   Future<void> _setStatus(String v) async {
     setState(() => _status = v);
     await _refresh();
-  }
-
-  // -------- Shimmer Loading --------
-  Widget _buildShimmerLoading() {
-    return ListView.builder(
-      padding: EdgeInsets.symmetric(horizontal: 20.w, vertical: 12.h),
-      itemCount: 5,
-      itemBuilder: (context, index) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: 15.h),
-          child: Shimmer.fromColors(
-            baseColor: Colors.grey.shade300,
-            highlightColor: Colors.grey.shade100,
-            child: Container(
-              height: 120.h,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
-        );
-      },
-    );
   }
 
   // -------- Widgets --------
@@ -860,18 +849,17 @@ class _OrderHistoryPageState extends State<OrderHistoryPage> {
             ),
           ],
         ),
-        body:
-            _isInitialLoading
-                ? _buildShimmerLoading()
-                : RefreshIndicator(
-                  onRefresh: _refresh,
-                  color: Color(0xFF6C63FF),
-                  child: Column(
-                    children: [
-                      _filtersBar(),
-                      _subtotalCard(),
-                      Expanded(
-                        child: Stack(
+        body: RefreshIndicator(
+          onRefresh: _refresh,
+          color: Color(0xFF6C63FF),
+          child: Column(
+            children: [
+              _filtersBar(),
+              _subtotalCard(),
+              Expanded(
+                child: _isInitialLoading
+                    ? const ListLoading()
+                    : Stack(
                           children: [
                             if (_orders.isEmpty)
                               Center(

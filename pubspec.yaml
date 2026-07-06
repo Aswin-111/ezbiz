@@ -44,7 +44,6 @@ dependencies:
   share_plus: ^10.1.4
   syncfusion_flutter_core: ^28.2.12
   lottie: ^3.3.2
-  shimmer: ^3.0.0
 
 dev_dependencies:
   flutter_test:

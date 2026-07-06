@@ -1,8 +1,10 @@
 // lib/widgets/logout_dialog.dart
+import 'package:ezbiz/Consts/consts.dart';
+import 'package:ezbiz/helper/helper.dart';
 import 'package:ezbiz/pages/login.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 
 Future<void> showLogoutConfirmationDialog(BuildContext context) async {
   return showDialog<void>(
@@ -84,13 +86,19 @@ Future<void> showLogoutConfirmationDialog(BuildContext context) async {
                         fontWeight: FontWeight.w600),
                   ),
                   onPressed: () async {
-                    SharedPreferences prefs =
-                        await SharedPreferences.getInstance();
-                    await prefs.remove('comp_code');
-                    Navigator.pushAndRemoveUntil(
-                      context,
+                    Navigator.of(context).pop();
+                    try {
+                      final headers = await authHeaders();
+                      await http
+                          .post(Uri.parse('$baseUrl/logout'), headers: headers)
+                          .timeout(const Duration(seconds: 8));
+                    } catch (_) {
+                      // Ignore network/timeout errors — still clear locally.
+                    }
+                    await AuthStorage.clearAll();
+                    navigatorKey.currentState?.pushAndRemoveUntil(
                       MaterialPageRoute(
-                          builder: (context) => SignUpScreen()),
+                          builder: (_) => const SignUpScreen()),
                       (Route<dynamic> route) => false,
                     );
                   },

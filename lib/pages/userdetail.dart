@@ -1,13 +1,16 @@
 // lib/pages/user_details_page.dart
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:ezbiz/DetailWidgets/cart_item_card.dart';
 import 'package:ezbiz/DetailWidgets/checkout_bar.dart';
 import 'package:ezbiz/DetailWidgets/customer_info_card.dart';
 import 'package:ezbiz/DetailWidgets/item_searchbar.dart';
 import 'package:ezbiz/DetailWidgets/shop_item.dart';
+import 'package:ezbiz/helper/helper.dart';
+import 'package:ezbiz/helper/page_limit.dart';
+import 'package:ezbiz/widgets/list_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
@@ -16,7 +19,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ezbiz/Consts/consts.dart';
 import 'package:ezbiz/pages/order_pdf.dart';
-import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
 
 class UserDetailsPage extends StatefulWidget {
@@ -38,10 +40,18 @@ class UserDetailsPage extends StatefulWidget {
 class _UserDetailsPageState extends State<UserDetailsPage> {
   final _formKey = GlobalKey<FormState>();
   final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
+  Timer? _searchDebounce;
 
   List<Map<String, dynamic>> _userDetails = [];
   List<Map<String, dynamic>> _filteredDetails = [];
   final List<Map<String, dynamic>> _addedItems = [];
+
+  // Pagination state — _limit is computed from screen height after first frame
+  int _page = 1;
+  int _limit = 12; // fallback; overridden in initState post-frame callback
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
 
   bool _isFetchingItems = true;
   bool _isGeneratingBill = false;
@@ -89,12 +99,35 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   void initState() {
     super.initState();
     _showShopDetails = true;
-    _fetchUserDetails();
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >=
+          _scrollController.position.maxScrollExtent - 200) {
+        _fetchNextPage();
+      }
+    });
+    // Compute responsive limit after the first frame so MediaQuery is available,
+    // then kick off the initial fetch with the correct page size.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // Card ~92 px tall + 12 px bottom margin = 104 px per row.
+      // Overhead: AppBar(56) + CustomerInfoCard(~100) + SearchBar(~60)
+      //           + "Available Items" header row(~50) + padding(~20) ≈ 286 px.
+      _limit = computePageLimit(
+        context,
+        cardHeight: 104,
+        overhead: 286,
+        min: 8,
+        max: 25,
+      );
+      _fetchPage(page: 1);
+    });
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _scrollController.dispose();
+    _searchDebounce?.cancel();
     super.dispose();
   }
 
@@ -110,59 +143,65 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
 
   // ==================== API CALLS ====================
 
-  Future<void> _fetchUserDetails() async {
-    if (mounted) {
-      setState(() {
-        _isFetchingItems = true;
-      });
+  Future<void> _fetchPage({required int page}) async {
+    if (!mounted) return;
+    if (page == 1) {
+      setState(() => _isFetchingItems = true);
+    } else {
+      if (_isLoadingMore || !_hasMore) return;
+      setState(() => _isLoadingMore = true);
     }
 
     try {
       final headers = await authHeaders();
 
+      final body = <String, dynamic>{
+        'comp_code': widget.compCode,
+        'page': page,
+        'limit': _limit,
+      };
+      final searchTerm = _searchController.text.trim();
+      if (searchTerm.isNotEmpty) body['search'] = searchTerm;
+
       final response = await http.post(
         Uri.parse('$baseUrl/shopdetails'),
         headers: headers,
-        body: jsonEncode({'comp_code': widget.compCode}),
+        body: jsonEncode(body),
       );
 
       debugPrint('SHOP DETAILS STATUS: ${response.statusCode}');
-      debugPrint('SHOP DETAILS BODY: ${response.body}');
+
+      if (response.statusCode == 401) {
+        clearAuthAndNavigateToLogin();
+        return;
+      }
 
       if (response.statusCode != 200) {
         throw Exception(
-          'Failed to fetch items. '
-          'Status: ${response.statusCode}, '
-          'Response: ${response.body}',
+          'Failed to fetch items. Status: ${response.statusCode}',
         );
       }
 
       final dynamic jsonData = jsonDecode(response.body);
 
+      // Paginated response: { total, page, limit, totalPages, data: [...] }
+      // Legacy fallback: bare list or { data/details/items: [...] }
       List<dynamic> responseItems = [];
+      int totalPages = 1;
 
-      // Old backend format:
-      // [ {...}, {...} ]
-      if (jsonData is List) {
-        responseItems = jsonData;
-      }
-      // New backend formats:
-      // { "data": [...] }
-      // { "details": [...] }
-      // { "items": [...] }
-      else if (jsonData is Map<String, dynamic>) {
+      if (jsonData is Map<String, dynamic>) {
+        totalPages = (jsonData['totalPages'] as num?)?.toInt() ?? 1;
         final dynamic listData =
             jsonData['data'] ?? jsonData['details'] ?? jsonData['items'];
-
-        if (listData is List) {
-          responseItems = listData;
-        }
+        if (listData is List) responseItems = listData;
+      } else if (jsonData is List) {
+        responseItems = jsonData;
       }
 
-      final normalized =
-          responseItems.whereType<Map>().map<Map<String, dynamic>>((rawItem) {
+      final normalized = responseItems
+          .whereType<Map>()
+          .map<Map<String, dynamic>>((rawItem) {
             final item = Map<String, dynamic>.from(rawItem);
-
             return {
               ...item,
               'item_code': (item['item_code'] ?? '').toString(),
@@ -179,36 +218,43 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
               'item_disc': _asDouble(item['item_disc']),
               'item_cess': _asDouble(item['item_cess']),
             };
-          }).toList();
-
-      debugPrint('PARSED SHOP ITEM COUNT: ${normalized.length}');
+          })
+          .toList();
 
       if (!mounted) return;
 
       setState(() {
-        _userDetails = normalized;
-        _filteredDetails = List<Map<String, dynamic>>.from(normalized);
+        _page = page;
+        _hasMore = page < totalPages;
+
+        if (page == 1) {
+          _userDetails = normalized;
+        } else {
+          _userDetails = [..._userDetails, ...normalized];
+        }
+        _filteredDetails = List<Map<String, dynamic>>.from(_userDetails);
       });
 
-      if (normalized.isEmpty) {
-        _showErrorSnackBar(
-          'The API returned successfully, but no items were found.',
-        );
+      if (page == 1 && normalized.isEmpty) {
+        _showErrorSnackBar('No items found.');
       }
     } catch (error, stackTrace) {
       debugPrint('SHOP DETAILS ERROR: $error');
       debugPrintStack(stackTrace: stackTrace);
-
-      if (mounted) {
-        _showErrorSnackBar('Error fetching items: $error');
-      }
+      if (mounted) _showErrorSnackBar('Error fetching items: $error');
     } finally {
       if (mounted) {
         setState(() {
           _isFetchingItems = false;
+          _isLoadingMore = false;
         });
       }
     }
+  }
+
+  Future<void> _fetchNextPage() async {
+    if (!_hasMore || _isLoadingMore || _isFetchingItems) return;
+    await _fetchPage(page: _page + 1);
   }
 
  Future<void> _placeOrderAndGetPdf() async {
@@ -337,18 +383,31 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   }
 
   void _filterSearchResults(String query) {
+    // Immediate client-side filter over already-loaded items for instant feedback.
     setState(() {
       if (query.isEmpty) {
         _filteredDetails = List.from(_userDetails);
       } else {
         final q = query.toLowerCase().trim();
-        _filteredDetails =
-            _userDetails.where((item) {
-              final code = (item['item_code'] ?? '').toString().toLowerCase();
-              final name = (item['item_name'] ?? '').toString().toLowerCase();
-              return code.contains(q) || name.contains(q);
-            }).toList();
+        _filteredDetails = _userDetails.where((item) {
+          final code = (item['item_code'] ?? '').toString().toLowerCase();
+          final name = (item['item_name'] ?? '').toString().toLowerCase();
+          return code.contains(q) || name.contains(q);
+        }).toList();
       }
+    });
+
+    // Debounced server-side search so we fetch all pages for this query.
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+      setState(() {
+        _page = 1;
+        _hasMore = true;
+        _userDetails = [];
+        _filteredDetails = [];
+      });
+      _fetchPage(page: 1);
     });
   }
 
@@ -603,123 +662,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
     );
   }
 
-  Widget _buildShimmerLoading() {
-    return Column(
-      children: [
-        // Customer info card skeleton
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Shimmer.fromColors(
-            baseColor: Colors.grey.shade300,
-            highlightColor: Colors.grey.shade100,
-            child: Container(
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
-        ),
-
-        // Search bar skeleton
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Shimmer.fromColors(
-            baseColor: Colors.grey.shade300,
-            highlightColor: Colors.grey.shade100,
-            child: Container(
-              height: 48,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        // List skeleton (items)
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: 6,
-            itemBuilder: (context, index) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Shimmer.fromColors(
-                  baseColor: Colors.grey.shade300,
-                  highlightColor: Colors.grey.shade100,
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      children: [
-                        // Left icon block
-                        Container(
-                          width: 50,
-                          height: 50,
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade300,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        // Text lines
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Container(
-                                width: 160,
-                                height: 12,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Container(
-                                width: 200,
-                                height: 10,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Container(
-                                width: 120,
-                                height: 10,
-                                decoration: BoxDecoration(
-                                  color: Colors.grey.shade300,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildBody() {
-    if (_isFetchingItems) {
-      return _buildShimmerLoading();
-    }
-
+    // CustomerInfoCard and ItemSearchBar are always in the tree so the
+    // keyboard cursor is never dropped when a new page-1 fetch begins.
     return Column(
       children: [
         CustomerInfoCard(
@@ -734,7 +679,14 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
           onChanged: _filterSearchResults,
           onClear: () {
             _searchController.clear();
-            _filterSearchResults('');
+            _searchDebounce?.cancel();
+            setState(() {
+              _page = 1;
+              _hasMore = true;
+              _userDetails = [];
+              _filteredDetails = [];
+            });
+            _fetchPage(page: 1);
           },
         ),
         const SizedBox(height: 12),
@@ -779,6 +731,9 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
   }
 
   Widget _buildItemList() {
+    // Show spinner in the list area only — search bar stays mounted above.
+    if (_isFetchingItems) return const ListLoading();
+
     if (_filteredDetails.isEmpty) {
       return Center(
         child: Column(
@@ -795,15 +750,21 @@ class _UserDetailsPageState extends State<UserDetailsPage> {
       );
     }
 
+    // Extra slot at the end for the next-page spinner.
+    final itemCount = _filteredDetails.length + (_isLoadingMore ? 1 : 0);
+
     return ListView.builder(
+      controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: _filteredDetails.length,
+      itemCount: itemCount,
       itemBuilder: (context, index) {
+        if (index == _filteredDetails.length) {
+          return const PageLoadingIndicator();
+        }
+
         final item = _filteredDetails[index];
         final rate = _getItemNetRate(item);
         final uom = (item['item_uom'] ?? '').toString();
-
-        // ✅ force numeric type safely
         final int stock = _asInt(item['item_qty']);
 
         return ShopItemCard(
